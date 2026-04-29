@@ -18,6 +18,8 @@ import fcntl
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -323,6 +325,9 @@ def cmd_add(args: argparse.Namespace) -> int:
             raise ManagerError(f"account already exists: {name} (use --force to overwrite)")
         atomic_write_json(dst, auth)
         state = load_state(paths)
+        if state.get("active") is None and src == paths.codex_auth.resolve():
+            state["active"] = name
+            state["last_activated_at"] = iso_now()
         save_state(paths, state)
         write_status(paths, name, "ok", "imported")
     meta = account_metadata(auth)
@@ -402,6 +407,51 @@ def print_accounts(paths: Paths) -> None:
     print("")
     for row in rows:
         print(f"{row['mark']} {row['name']:<18} {row['state']:<13} expires {row['expires']:<9} {row['email']}")
+
+
+def print_section(title: str) -> None:
+    print("")
+    print(f"== {title} ==")
+
+
+def run_command(command: list[str], timeout: int = 5) -> tuple[int | None, str]:
+    try:
+        result = subprocess.run(
+            command,
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=timeout,
+        )
+        return result.returncode, result.stdout.rstrip()
+    except FileNotFoundError:
+        return None, f"{command[0]} not found"
+    except subprocess.TimeoutExpired:
+        return None, f"{' '.join(command)} timed out after {timeout}s"
+
+
+def print_command_output(label: str, command: list[str], timeout: int = 5) -> None:
+    code, output = run_command(command, timeout=timeout)
+    status = "ok" if code == 0 else f"exit={code}" if code is not None else "unavailable"
+    print(f"{label}: {' '.join(command)} [{status}]")
+    print(output if output else "(no output)")
+
+
+def file_mode(path: Path) -> str:
+    try:
+        stat = path.stat()
+    except FileNotFoundError:
+        return "missing"
+    return f"{stat.st_mode & 0o777:o}"
+
+
+def tail_lines(path: Path, count: int) -> list[str]:
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except FileNotFoundError:
+        return []
+    return lines[-count:]
 
 
 def interactive_ls(paths: Paths) -> int:
@@ -499,13 +549,82 @@ def cmd_maintain(args: argparse.Namespace) -> int:
 
 def cmd_doctor(args: argparse.Namespace) -> int:
     paths = Paths()
+    ensure_dirs(paths)
+    state = load_state(paths)
+
+    print_section("Summary")
+    print(f"manager home:       {paths.manager_home}")
+    print(f"active auth path:   {paths.codex_auth}")
+    print(f"selected account:   {state.get('active') or '(none)'}")
+    print(f"accounts dir:       {paths.accounts_dir}")
+    print(f"status dir:         {paths.status_dir}")
+    print(f"log file:           {paths.log_file}")
+    print(f"refresh threshold:  access token <= {human_delta(DEFAULT_REFRESH_MARGIN)} or last_refresh >= {human_delta(DEFAULT_LAST_REFRESH_MAX_AGE)}")
+    if state.get("active") is None and list_accounts(paths):
+        print("warning:            no selected account; run codex-manager ls and press Enter on the active account")
+
+    print_section("Accounts")
     print_accounts(paths)
-    print("")
+
+    print_section("Account Status")
     for name in list_accounts(paths):
         sp = status_path(paths, name)
         if sp.exists():
             s = read_json(sp)
             print(f"{name}: {s.get('state')} - {s.get('message')} ({s.get('last_checked_at')})")
+        else:
+            print(f"{name}: no status file yet")
+
+    print_section("Files")
+    print(f"{paths.codex_auth} mode={file_mode(paths.codex_auth)}")
+    print(f"{paths.state_file} mode={file_mode(paths.state_file)}")
+    print(f"{paths.lock_file} mode={file_mode(paths.lock_file)}")
+    print(f"{paths.log_file} mode={file_mode(paths.log_file)}")
+    for name in list_accounts(paths):
+        print(f"{account_path(paths, name)} mode={file_mode(account_path(paths, name))}")
+
+    print_section("Scheduler")
+    service_path = paths.home / ".config/systemd/user/codex-manager-maintain.service"
+    timer_path = paths.home / ".config/systemd/user/codex-manager-maintain.timer"
+    print(f"systemd service file: {service_path} mode={file_mode(service_path)}")
+    print(f"systemd timer file:   {timer_path} mode={file_mode(timer_path)}")
+    if shutil.which("systemctl"):
+        print_command_output(
+            "timer status",
+            ["systemctl", "--user", "status", "codex-manager-maintain.timer", "--no-pager"],
+            timeout=8,
+        )
+        print_command_output(
+            "timer schedule",
+            ["systemctl", "--user", "list-timers", "codex-manager-maintain.timer", "--no-pager"],
+            timeout=8,
+        )
+        print_command_output(
+            "service status",
+            ["systemctl", "--user", "status", "codex-manager-maintain.service", "--no-pager"],
+            timeout=8,
+        )
+        print_command_output(
+            "service journal",
+            ["journalctl", "--user", "-u", "codex-manager-maintain.service", "-n", str(args.journal_lines), "--no-pager"],
+            timeout=8,
+        )
+    else:
+        print("systemctl not found")
+
+    print_section("Crontab Fallback")
+    if shutil.which("crontab"):
+        print_command_output("crontab", ["sh", "-lc", "crontab -l 2>/dev/null | grep codex-manager || true"])
+    else:
+        print("crontab not found")
+
+    print_section("Manager Log")
+    lines = tail_lines(paths.log_file, args.log_lines)
+    if lines:
+        for line in lines:
+            print(line)
+    else:
+        print("(no manager log entries yet; this is normal if no refresh/error happened)")
     return 0
 
 
@@ -527,7 +646,9 @@ def build_parser() -> argparse.ArgumentParser:
     maintain.add_argument("--quiet", action="store_true")
     maintain.set_defaults(func=cmd_maintain)
 
-    doctor = sub.add_parser("doctor", help="show health/status details")
+    doctor = sub.add_parser("doctor", help="show full health, scheduler, and status details")
+    doctor.add_argument("--journal-lines", type=int, default=50)
+    doctor.add_argument("--log-lines", type=int, default=50)
     doctor.set_defaults(func=cmd_doctor)
 
     return parser

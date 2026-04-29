@@ -19,6 +19,8 @@ codex-manager maintain --quiet
 ```
 
 `codex-manager ls` is interactive when run in a terminal: use up/down and Enter to choose the active account.
+`codex-manager doctor` prints the account list, token health, file permissions, systemd timer/service
+status, journal lines, crontab fallback status, and manager log tail in one place.
 
 ## Setup
 

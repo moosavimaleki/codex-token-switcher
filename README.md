@@ -8,6 +8,7 @@ account out to `~/.codex/auth.json`, and runs background maintenance that:
 - syncs the active `~/.codex/auth.json` back into its stored account file because Codex may refresh it;
 - refreshes inactive accounts only when their access token is near expiry or their `last_refresh` is old;
 - sends token refresh requests through the configured proxy when one is set;
+- fetches Codex usage limits during `check`/maintenance and caches them for `ls`;
 - never auto-switches accounts.
 
 ## Commands
@@ -22,11 +23,12 @@ codex-manager maintain --quiet
 ```
 
 `codex-manager ls` is interactive when run in a terminal: use up/down and Enter to choose the
-active account, or press `d` to delete the selected inactive account.
+active account, or press `d` to delete the selected inactive account. `ls` shows cached 5-hour and
+weekly limits from the latest `check`/maintenance run and does not make network requests.
 
 `codex-manager check` runs account maintenance immediately for every account, including the active
-one, and refreshes any account whose access token is near expiry. Use `--force-refresh` when you
-want to force a refresh request for every account.
+one, refreshes any account whose access token is near expiry, and updates cached Codex usage
+limits. Use `--force-refresh` when you want to force a refresh request for every account.
 
 `codex-manager config` opens a small interactive wizard for proxy, maintenance interval, randomized
 delay, and scheduler apply. Script-friendly commands such as `codex-manager config show` and
@@ -98,6 +100,7 @@ codex_manager/         # Python package
   commands.py          # add/list/maintain/doctor commands
   config.py            # manager config, durations, scheduler helpers
   constants.py         # refresh endpoint and policy constants
+  limits.py            # Codex usage limit fetching and display shaping
   errors.py            # user-facing errors
   paths.py             # filesystem paths and account names
   storage.py           # atomic writes, lock, state, logs

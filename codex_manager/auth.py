@@ -91,7 +91,7 @@ def should_refresh(auth: dict[str, Any]) -> tuple[bool, str]:
     return False, f"last_refresh age {human_delta(age)}"
 
 
-def refresh_auth(auth: dict[str, Any]) -> dict[str, Any]:
+def refresh_auth(auth: dict[str, Any], proxy_url: str | None = None) -> dict[str, Any]:
     tokens = auth.get("tokens") if isinstance(auth.get("tokens"), dict) else None
     if not tokens or not tokens.get("refresh_token"):
         raise ManagerError("missing refresh token")
@@ -108,7 +108,14 @@ def refresh_auth(auth: dict[str, Any]) -> dict[str, Any]:
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        if proxy_url:
+            opener = urllib.request.build_opener(
+                urllib.request.ProxyHandler({"http": proxy_url, "https": proxy_url})
+            )
+            response = opener.open(req, timeout=30)
+        else:
+            response = urllib.request.urlopen(req, timeout=30)
+        with response as resp:
             raw = resp.read()
             refreshed = json.loads(raw.decode("utf-8"))
     except urllib.error.HTTPError as exc:

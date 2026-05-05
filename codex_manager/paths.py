@@ -14,6 +14,7 @@ class Paths:
         ).expanduser()
         self.accounts_dir = self.manager_home / "accounts"
         self.status_dir = self.manager_home / "status"
+        self.config_file = self.manager_home / "config.json"
         self.state_file = self.manager_home / "state.json"
         self.lock_file = self.manager_home / "lock"
         self.log_file = self.manager_home / "log.txt"

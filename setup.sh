@@ -20,49 +20,7 @@ PYTHONPATH="$INSTALL_DIR:\${PYTHONPATH:-}" exec python3 "$INSTALL_DIR/codex-mana
 EOF
 chmod 0755 "$BIN_DIR/codex-manager"
 
-SERVICE_FILE="$SYSTEMD_USER_DIR/codex-manager-maintain.service"
-TIMER_FILE="$SYSTEMD_USER_DIR/codex-manager-maintain.timer"
-
-cat > "$SERVICE_FILE" <<EOF
-[Unit]
-Description=Codex Manager maintenance
-
-[Service]
-Type=oneshot
-ExecStart=$BIN_DIR/codex-manager maintain --quiet
-EOF
-
-cat > "$TIMER_FILE" <<EOF
-[Unit]
-Description=Run Codex Manager maintenance every 6 hours
-
-[Timer]
-OnBootSec=5min
-OnUnitActiveSec=6h
-RandomizedDelaySec=10min
-Persistent=true
-Unit=codex-manager-maintain.service
-
-[Install]
-WantedBy=timers.target
-EOF
-
-TIMER_STATUS="not installed"
-if command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; then
-  systemctl --user daemon-reload
-  systemctl --user enable --now codex-manager-maintain.timer
-  TIMER_STATUS="systemd user timer: codex-manager-maintain.timer"
-elif command -v crontab >/dev/null 2>&1; then
-  CRON_LINE="17 */6 * * * $BIN_DIR/codex-manager maintain --quiet >/dev/null 2>&1"
-  TMP_CRON="$(mktemp)"
-  crontab -l 2>/dev/null | grep -vF "$BIN_DIR/codex-manager maintain --quiet" > "$TMP_CRON" || true
-  echo "$CRON_LINE" >> "$TMP_CRON"
-  crontab "$TMP_CRON"
-  rm -f "$TMP_CRON"
-  TIMER_STATUS="crontab: $CRON_LINE"
-else
-  TIMER_STATUS="not installed; neither systemd user timers nor crontab are available"
-fi
+TIMER_STATUS="$("$BIN_DIR/codex-manager" scheduler apply --bin "$BIN_DIR/codex-manager" --quiet)"
 
 cat <<EOF
 codex-manager installed.

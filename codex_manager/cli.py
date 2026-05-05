@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from .commands import cmd_add, cmd_doctor, cmd_ls, cmd_maintain
+from .commands import cmd_add, cmd_check, cmd_config, cmd_doctor, cmd_ls, cmd_maintain, cmd_scheduler_apply
 from .errors import ManagerError
 
 
@@ -24,6 +24,36 @@ def build_parser() -> argparse.ArgumentParser:
     maintain = sub.add_parser("maintain", help="internal: sync active and refresh inactive accounts")
     maintain.add_argument("--quiet", action="store_true")
     maintain.set_defaults(func=cmd_maintain)
+
+    check = sub.add_parser("check", help="check all accounts now and refresh when needed")
+    check.add_argument("--force-refresh", action="store_true", help="refresh every account even if access token looks valid")
+    check.add_argument("--quiet", action="store_true")
+    check.set_defaults(func=cmd_check)
+
+    config = sub.add_parser(
+        "config",
+        help="interactive config wizard",
+        usage="codex-manager config [show|set ...]",
+        description="Run without a subcommand to open the interactive config wizard.",
+    )
+    config.set_defaults(func=cmd_config)
+    config_sub = config.add_subparsers(dest="config_cmd")
+    config_show = config_sub.add_parser("show", help="show config")
+    config_show.set_defaults(func=cmd_config)
+    config_set = config_sub.add_parser("set", help="update config")
+    config_set.add_argument("--proxy", help="HTTP/HTTPS proxy URL, or 'none' to disable")
+    config_set.add_argument("--interval", help="maintenance interval, for example 30m, 6h, or 1d")
+    config_set.add_argument("--randomized-delay", help="systemd randomized delay, for example 0s or 10min")
+    config_set.add_argument("--apply-scheduler", action="store_true", help="rewrite and restart the installed timer")
+    config_set.add_argument("--bin", help="codex-manager executable path for scheduler apply")
+    config_set.set_defaults(func=cmd_config)
+
+    scheduler = sub.add_parser("scheduler", help="install or update the maintenance scheduler")
+    scheduler_sub = scheduler.add_subparsers(dest="scheduler_cmd", required=True)
+    scheduler_apply = scheduler_sub.add_parser("apply", help="apply scheduler from config")
+    scheduler_apply.add_argument("--bin", help="codex-manager executable path")
+    scheduler_apply.add_argument("--quiet", action="store_true")
+    scheduler_apply.set_defaults(func=cmd_scheduler_apply)
 
     doctor = sub.add_parser("doctor", help="show full health, scheduler, and status details")
     doctor.add_argument("--journal-lines", type=int, default=50)

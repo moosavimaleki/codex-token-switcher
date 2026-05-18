@@ -9,6 +9,9 @@ from .errors import ManagerError
 class Paths:
     def __init__(self) -> None:
         self.home = Path.home()
+        self.codex_home = Path(
+            os.environ.get("CODEX_HOME", str(self.home / ".codex"))
+        ).expanduser()
         self.manager_home = Path(
             os.environ.get("CODEX_MANAGER_HOME", str(self.home / ".codex-manager"))
         ).expanduser()
@@ -19,8 +22,9 @@ class Paths:
         self.lock_file = self.manager_home / "lock"
         self.log_file = self.manager_home / "log.txt"
         self.codex_auth = Path(
-            os.environ.get("CODEX_AUTH_PATH", str(self.home / ".codex" / "auth.json"))
+            os.environ.get("CODEX_AUTH_PATH", str(self.codex_home / "auth.json"))
         ).expanduser()
+        self.codex_app_auth = self.codex_home / "auth.json"
 
 
 def ensure_dirs(paths: Paths) -> None:

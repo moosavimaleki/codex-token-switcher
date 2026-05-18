@@ -17,6 +17,7 @@ account out to `~/.codex/auth.json`, and runs background maintenance that:
 codex-manager add <name> <path-to-working-auth.json>
 codex-manager ls
 codex-manager check
+codex-manager compact <session_id>
 codex-manager config
 codex-manager doctor
 codex-manager maintain --quiet
@@ -29,6 +30,11 @@ weekly limits from the latest `check`/maintenance run and does not make network 
 `codex-manager check` runs account maintenance immediately for every account, including the active
 one, refreshes any account whose access token is near expiry, and updates cached Codex usage
 limits. Use `--force-refresh` when you want to force a refresh request for every account.
+
+`codex-manager compact <session_id>` prints the same account health/limit context as `ls`, asks
+which account should compact the session, then runs Codex's own `app-server` compaction API with
+that account and the configured proxy. You can also pass a rollout `.jsonl` path instead of the
+raw session id.
 
 `codex-manager config` opens a small interactive wizard for proxy, maintenance interval, randomized
 delay, and scheduler apply. Script-friendly commands such as `codex-manager config show` and
@@ -96,6 +102,7 @@ Auth/state files are written with `0600` permissions and manager directories wit
 codex-manager          # thin executable launcher
 codex_manager/         # Python package
   auth.py              # auth.json parsing and token refresh
+  app_server.py        # minimal Codex app-server JSON-RPC client
   cli.py               # argparse entrypoint
   commands.py          # add/list/maintain/doctor commands
   config.py            # manager config, durations, scheduler helpers

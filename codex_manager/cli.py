@@ -3,7 +3,16 @@ from __future__ import annotations
 import argparse
 import sys
 
-from .commands import cmd_add, cmd_check, cmd_config, cmd_doctor, cmd_ls, cmd_maintain, cmd_scheduler_apply
+from .commands import (
+    cmd_add,
+    cmd_check,
+    cmd_compact,
+    cmd_config,
+    cmd_doctor,
+    cmd_ls,
+    cmd_maintain,
+    cmd_scheduler_apply,
+)
 from .errors import ManagerError
 
 
@@ -29,6 +38,13 @@ def build_parser() -> argparse.ArgumentParser:
     check.add_argument("--force-refresh", action="store_true", help="refresh every account even if access token looks valid")
     check.add_argument("--quiet", action="store_true")
     check.set_defaults(func=cmd_check)
+
+    compact = sub.add_parser("compact", help="compact a Codex session with a selected account")
+    compact.add_argument("session_id", help="Codex thread/session id or rollout .jsonl path")
+    compact.add_argument("--account", help="account name; skips the interactive picker")
+    compact.add_argument("--codex-bin", help="codex executable path (default: PATH)")
+    compact.add_argument("--timeout", type=float, default=900.0, help="seconds to wait for compaction")
+    compact.set_defaults(func=cmd_compact)
 
     config = sub.add_parser(
         "config",

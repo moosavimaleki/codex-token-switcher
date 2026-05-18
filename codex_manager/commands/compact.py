@@ -185,15 +185,18 @@ def cmd_compact(args) -> int:
     account = select_account_for_compact(paths, args.account)
     print(f"compact session: {thread_id}")
     print(f"account: {account}")
-    print(dim("Starting Codex app-server with the selected auth..."))
     with checked_out_app_server_auth(paths, account) as refresh_handler:
-        with CodexAppServer(
+        server = CodexAppServer(
             paths.codex_home,
             codex_bin=args.codex_bin,
             auth_refresh_handler=refresh_handler,
             proxy_url=config.get("proxy"),
-        ) as server:
+        )
+        print(dim(f"Starting Codex app-server with {server.executable_label()}..."))
+        with server:
             server.initialize()
+            print(dim("Resuming session in app-server..."))
+            server.resume_thread(thread_id)
             server.compact_thread(thread_id)
             print(dim("Compaction started; waiting for completion..."))
             result = server.wait_for_compaction(thread_id, timeout=args.timeout)

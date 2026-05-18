@@ -32,9 +32,10 @@ one, refreshes any account whose access token is near expiry, and updates cached
 limits. Use `--force-refresh` when you want to force a refresh request for every account.
 
 `codex-manager compact <session_id>` prints the same account health/limit context as `ls`, asks
-which account should compact the session, then runs Codex's own `app-server` compaction API with
-that account and the configured proxy. You can also pass a rollout `.jsonl` path instead of the
-raw session id.
+which account should compact the session, resumes that session inside Codex's own `app-server`,
+then runs the compaction API with that account and the configured proxy. You can also pass a
+rollout `.jsonl` path instead of the raw session id. When multiple `codex` binaries are installed,
+the manager auto-selects the newest version it can find; use `--codex-bin` to override it.
 
 `codex-manager config` opens a small interactive wizard for proxy, maintenance interval, randomized
 delay, and scheduler apply. Script-friendly commands such as `codex-manager config show` and

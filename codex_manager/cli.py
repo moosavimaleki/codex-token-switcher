@@ -42,7 +42,7 @@ def build_parser() -> argparse.ArgumentParser:
     compact = sub.add_parser("compact", help="compact a Codex session with a selected account")
     compact.add_argument("session_id", help="Codex thread/session id or rollout .jsonl path")
     compact.add_argument("--account", help="account name; skips the interactive picker")
-    compact.add_argument("--codex-bin", help="codex executable path (default: PATH)")
+    compact.add_argument("--codex-bin", help="codex executable path (default: newest found)")
     compact.add_argument("--timeout", type=float, default=900.0, help="seconds to wait for compaction")
     compact.set_defaults(func=cmd_compact)
 

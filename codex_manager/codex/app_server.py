@@ -10,11 +10,112 @@ import time
 import uuid
 from collections import deque
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, NamedTuple
 
 from ..errors import ManagerError
 
 AuthRefreshHandler = Callable[[dict[str, Any]], dict[str, Any]]
+
+
+class CodexExecutable(NamedTuple):
+    path: str
+    version: str | None
+
+
+def select_codex_executable(codex_bin: str | None = None) -> CodexExecutable:
+    if codex_bin:
+        path = _resolve_explicit_codex_bin(codex_bin)
+        return CodexExecutable(str(path), codex_executable_version(path))
+
+    candidates = _codex_candidates()
+    if not candidates:
+        raise ManagerError("codex executable not found in PATH")
+
+    versioned = [(path, codex_executable_version(path)) for path in candidates]
+    versioned.sort(
+        key=lambda item: (
+            _version_key(item[1]),
+            -candidates.index(item[0]),
+        ),
+        reverse=True,
+    )
+    path, version = versioned[0]
+    return CodexExecutable(str(path), version)
+
+
+def codex_executable_version(path: str | Path) -> str | None:
+    try:
+        result = subprocess.run(
+            [str(path), "--version"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except Exception:
+        return None
+    output = " ".join(part for part in (result.stdout, result.stderr) if part).strip()
+    if result.returncode != 0 or not output:
+        return None
+    import re
+
+    match = re.search(r"\b(\d+\.\d+\.\d+)\b", output)
+    return match.group(1) if match else None
+
+
+def _resolve_explicit_codex_bin(value: str) -> Path:
+    expanded = Path(value).expanduser()
+    if expanded.name != value or "/" in value:
+        path = expanded
+    else:
+        found = shutil.which(value)
+        if not found:
+            raise ManagerError(f"codex executable not found: {value}")
+        path = Path(found)
+    if not path.exists():
+        raise ManagerError(f"codex executable not found: {path}")
+    if not os.access(path, os.X_OK):
+        raise ManagerError(f"codex executable is not executable: {path}")
+    return path
+
+
+def _codex_candidates() -> list[Path]:
+    home = Path.home()
+    raw_paths: list[Path] = []
+    for dirname in os.get_exec_path():
+        if dirname:
+            raw_paths.append(Path(dirname).expanduser() / "codex")
+    raw_paths.extend(
+        [
+            home / ".bun" / "bin" / "codex",
+            home / ".volta" / "bin" / "codex",
+        ]
+    )
+
+    seen: set[str] = set()
+    candidates: list[Path] = []
+    for path in raw_paths:
+        try:
+            marker = str(path.resolve())
+        except OSError:
+            marker = str(path)
+        if marker in seen:
+            continue
+        seen.add(marker)
+        if path.exists() and os.access(path, os.X_OK):
+            candidates.append(path)
+    return candidates
+
+
+def _version_key(version: str | None) -> tuple[int, int, int]:
+    if not version:
+        return (-1, -1, -1)
+    parts = version.split(".")
+    try:
+        major, minor, patch = (int(parts[0]), int(parts[1]), int(parts[2]))
+    except (IndexError, ValueError):
+        return (-1, -1, -1)
+    return (major, minor, patch)
 
 
 class CodexAppServer:
@@ -26,9 +127,9 @@ class CodexAppServer:
         proxy_url: str | None = None,
     ) -> None:
         self.codex_home = codex_home
-        self.codex_bin = codex_bin or shutil.which("codex")
-        if not self.codex_bin:
-            raise ManagerError("codex executable not found in PATH")
+        executable = select_codex_executable(codex_bin)
+        self.codex_bin = executable.path
+        self.codex_version = executable.version
         self.auth_refresh_handler = auth_refresh_handler
         self.proxy_url = proxy_url
         self._proc: subprocess.Popen[str] | None = None
@@ -104,12 +205,24 @@ class CodexAppServer:
         self.notify("initialized")
         return result
 
+    def resume_thread(self, thread_id: str) -> dict[str, Any]:
+        return self.request(
+            "thread/resume",
+            {"threadId": thread_id, "excludeTurns": True},
+            timeout=60,
+        )
+
     def compact_thread(self, thread_id: str) -> dict[str, Any]:
         return self.request(
             "thread/compact/start",
             {"threadId": thread_id},
             timeout=60,
         )
+
+    def executable_label(self) -> str:
+        if self.codex_version:
+            return f"{self.codex_bin} ({self.codex_version})"
+        return self.codex_bin
 
     def wait_for_compaction(self, thread_id: str, timeout: float) -> dict[str, str]:
         deadline = time.monotonic() + timeout

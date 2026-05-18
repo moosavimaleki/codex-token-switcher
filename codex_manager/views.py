@@ -4,7 +4,7 @@ from pathlib import Path
 
 from .auth import access_expiry, account_metadata, read_auth, should_refresh
 from .errors import ManagerError
-from .limits import format_rate_limits_summary
+from .codex.limits import format_rate_limits_summary
 from .paths import Paths, list_accounts, status_path
 from .storage import file_mode, load_state, read_json
 from .terminal import bad, dim, info, ok, style, warn

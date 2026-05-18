@@ -6,10 +6,10 @@ import urllib.error
 import urllib.request
 from typing import Any
 
-from .auth import account_metadata
-from .constants import CHATGPT_USAGE_URL
-from .errors import ManagerError
-from .time_utils import human_delta, iso_now, utcnow
+from ..auth import account_metadata
+from ..constants import CHATGPT_USAGE_URL
+from ..errors import ManagerError
+from ..time_utils import human_delta, iso_now, utcnow
 
 
 class LimitFetchError(ManagerError):

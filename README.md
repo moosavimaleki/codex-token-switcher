@@ -102,12 +102,19 @@ Auth/state files are written with `0600` permissions and manager directories wit
 codex-manager          # thin executable launcher
 codex_manager/         # Python package
   auth.py              # auth.json parsing and token refresh
-  app_server.py        # minimal Codex app-server JSON-RPC client
   cli.py               # argparse entrypoint
-  commands.py          # add/list/maintain/doctor commands
   config.py            # manager config, durations, scheduler helpers
   constants.py         # refresh endpoint and policy constants
-  limits.py            # Codex usage limit fetching and display shaping
+  codex/               # Codex app-server and backend API adapters
+    app_server.py      # minimal Codex app-server JSON-RPC client
+    limits.py          # Codex usage limit fetching and display shaping
+  commands/            # CLI command handlers
+    accounts.py        # add/list/activate/delete account commands
+    compact.py         # session compaction account selection and auth checkout
+    config.py          # config CLI command and interactive wizard
+    doctor.py          # diagnostic report command
+    maintenance.py     # check/maintain account refresh and limits cache
+    scheduler.py       # systemd/crontab scheduler install/update
   errors.py            # user-facing errors
   paths.py             # filesystem paths and account names
   storage.py           # atomic writes, lock, state, logs

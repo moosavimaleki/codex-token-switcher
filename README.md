@@ -7,6 +7,7 @@ account out to `~/.codex/auth.json`, and runs background maintenance that:
 
 - syncs the active `~/.codex/auth.json` back into its stored account file because Codex may refresh it;
 - only syncs that active auth back when the current `auth.json` still matches the stored account identity;
+- treats `~/.codex-manager/accounts/*.json` as the source of truth and only promotes live `~/.codex/auth.json` when it is both the same account and provably newer;
 - refreshes inactive accounts only when their access token is near expiry or their `last_refresh` is old;
 - sends token refresh requests through the configured proxy when one is set;
 - fetches Codex usage limits during `check`/maintenance and caches them for `ls`;
@@ -100,6 +101,8 @@ the scheduler in one pass.
 - maintenance log: `~/.codex-manager/log.txt`
 
 Auth/state files are written with `0600` permissions and manager directories with `0700`.
+Whenever a file under `~/.codex-manager/` is overwritten, the previous five versions are kept as
+rotating backups named like `account.json.BAK1` through `account.json.BAK5`.
 
 ## Development Layout
 

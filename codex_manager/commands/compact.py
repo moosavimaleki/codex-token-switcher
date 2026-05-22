@@ -48,8 +48,10 @@ def print_compact_account_picker(paths: Paths, accounts: list[str]) -> None:
         state_text = {
             "active": ok("active"),
             "ok": ok("ok"),
+            "warning": warn("warning"),
             "refresh soon": warn("refresh soon"),
             "error": bad("error"),
+            "needs_login": bad("needs_login"),
         }.get(state_label, state_label)
         marker = ok("*") if name == active else dim(" ")
         limits = row["limits"][:35]

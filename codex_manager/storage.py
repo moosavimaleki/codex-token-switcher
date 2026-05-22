@@ -4,6 +4,7 @@ import contextlib
 import fcntl
 import json
 import os
+import shutil
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -11,6 +12,43 @@ from typing import Any
 from .errors import ManagerError
 from .paths import Paths, ensure_dirs
 from .time_utils import iso_now
+
+
+def _manager_home_path() -> Path:
+    return Path(
+        os.environ.get("CODEX_MANAGER_HOME", str(Path.home() / ".codex-manager"))
+    ).expanduser().resolve(strict=False)
+
+
+def _is_under_manager_home(path: Path) -> bool:
+    try:
+        path.resolve(strict=False).relative_to(_manager_home_path())
+        return True
+    except ValueError:
+        return False
+
+
+def _backup_path(path: Path, index: int) -> Path:
+    return path.with_name(f"{path.name}.BAK{index}")
+
+
+def rotate_manager_backups(path: Path, keep: int = 5) -> None:
+    if keep < 1 or not path.exists() or not _is_under_manager_home(path):
+        return
+
+    last_backup = _backup_path(path, keep)
+    with contextlib.suppress(FileNotFoundError):
+        last_backup.unlink()
+
+    for index in range(keep, 1, -1):
+        older = _backup_path(path, index - 1)
+        newer = _backup_path(path, index)
+        if older.exists():
+            os.replace(older, newer)
+
+    first_backup = _backup_path(path, 1)
+    shutil.copy2(path, first_backup)
+    os.chmod(first_backup, 0o600)
 
 
 def atomic_write_json(path: Path, data: dict[str, Any]) -> None:
@@ -22,6 +60,7 @@ def atomic_write_json(path: Path, data: dict[str, Any]) -> None:
             f.write("\n")
             f.flush()
             os.fsync(f.fileno())
+        rotate_manager_backups(path)
         os.chmod(tmp, 0o600)
         os.replace(tmp, path)
     finally:

@@ -115,6 +115,36 @@ def same_account_identity(expected: dict[str, Any], candidate: dict[str, Any]) -
     return True, f"matched on {', '.join(shared_keys)}"
 
 
+def should_promote_live_auth(stored: dict[str, Any], candidate: dict[str, Any]) -> tuple[bool, str]:
+    same_identity, identity_reason = same_account_identity(stored, candidate)
+    if not same_identity:
+        return False, identity_reason
+
+    stored_tokens = stored.get("tokens") if isinstance(stored.get("tokens"), dict) else {}
+    candidate_tokens = candidate.get("tokens") if isinstance(candidate.get("tokens"), dict) else {}
+
+    stored_refresh = stored_tokens.get("refresh_token")
+    candidate_refresh = candidate_tokens.get("refresh_token")
+    if isinstance(stored_refresh, str) and isinstance(candidate_refresh, str) and candidate_refresh != stored_refresh:
+        return True, "live auth has a newer refresh token"
+
+    stored_exp = access_expiry(stored)
+    candidate_exp = access_expiry(candidate)
+    if candidate_exp is not None and stored_exp is None:
+        return True, "live auth has a readable access token expiry"
+    if candidate_exp is not None and stored_exp is not None and candidate_exp > stored_exp:
+        return True, "live auth access token expires later"
+
+    stored_refresh_at = parse_datetime(stored.get("last_refresh"))
+    candidate_refresh_at = parse_datetime(candidate.get("last_refresh"))
+    if candidate_refresh_at is not None and stored_refresh_at is not None and candidate_refresh_at > stored_refresh_at:
+        return True, "live auth was refreshed later"
+    if candidate_refresh_at is not None and stored_refresh_at is None:
+        return True, "live auth has refresh metadata and stored auth does not"
+
+    return False, "live auth is not newer than manager copy"
+
+
 def should_refresh(auth: dict[str, Any]) -> tuple[bool, str]:
     exp = access_expiry(auth)
     if exp is not None:

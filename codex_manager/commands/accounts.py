@@ -5,7 +5,7 @@ import sys
 import time
 from pathlib import Path
 
-from ..auth import account_metadata, read_auth, same_account_identity
+from ..auth import account_metadata, read_auth, same_account_identity, should_promote_live_auth
 from ..errors import ManagerError
 from ..paths import Paths, account_path, ensure_dirs, list_accounts, sanitize_name, status_path
 from ..storage import atomic_write_json, load_state, manager_lock, save_state, write_log
@@ -91,7 +91,14 @@ def sync_active(paths: Paths) -> None:
         write_status(paths, active, "warning", message)
         write_log(paths, f"skipped syncing active auth for {active}: {reason}")
         return
+    should_promote, promotion_reason = should_promote_live_auth(stored_auth, auth)
+    if not should_promote:
+        write_status(paths, active, "ok", promotion_reason)
+        write_log(paths, f"left manager copy unchanged for {active}: {promotion_reason}")
+        return
     atomic_write_json(active_path, auth)
+    write_status(paths, active, "ok", f"synced from live auth: {promotion_reason}")
+    write_log(paths, f"synced live auth back into manager for {active}: {promotion_reason}")
 
 
 def activate(paths: Paths, name: str) -> None:

@@ -13,10 +13,15 @@ from .time_utils import human_delta, utcnow
 
 def describe_account(paths: Paths, name: str, active: str | None) -> dict[str, str]:
     limits = "limits unknown"
+    status_state = None
+    status_message = None
     sp = status_path(paths, name)
     if sp.exists():
         try:
-            limits = format_rate_limits_summary(read_json(sp).get("rate_limits"), compact=True)
+            status = read_json(sp)
+            limits = format_rate_limits_summary(status.get("rate_limits"), compact=True)
+            status_state = str(status.get("state") or "")
+            status_message = str(status.get("message") or "")
         except ManagerError:
             limits = "limits unknown"
     try:
@@ -25,6 +30,10 @@ def describe_account(paths: Paths, name: str, active: str | None) -> dict[str, s
         exp = access_expiry(auth)
         need, reason = should_refresh(auth)
         state = "active" if name == active else "refresh soon" if need else "ok"
+        if status_state in {"warning", "needs_login"}:
+            state = status_state
+            if status_message:
+                reason = status_message
         expires = human_delta(exp - utcnow()) if exp else "unknown"
         return {
             "name": name,
@@ -68,8 +77,10 @@ def print_accounts(paths: Paths) -> None:
         state_text = {
             "active": ok("active"),
             "ok": ok("ok"),
+            "warning": warn("warning"),
             "refresh soon": warn("refresh soon"),
             "error": bad("error"),
+            "needs_login": bad("needs_login"),
         }.get(state_label, state_label)
         marker = ok("●") if row["name"] == active else dim("○")
         limits = row["limits"][:35]

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import json
 import os
 import tempfile
 import unittest
@@ -11,12 +13,22 @@ from codex_manager.paths import Paths, account_path, ensure_dirs, status_path
 from codex_manager.storage import atomic_write_json, read_json, save_state
 
 
+def make_jwt(payload: dict) -> str:
+    def encode(value: dict) -> str:
+        raw = json.dumps(value, separators=(",", ":")).encode("utf-8")
+        return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+    return f"{encode({'alg': 'none', 'typ': 'JWT'})}.{encode(payload)}."
+
+
 def make_auth(
     *,
     refresh_token: str,
     account_id: str | None = None,
     email: str | None = None,
     subject: str | None = None,
+    access_exp: int | None = None,
+    last_refresh: str | None = None,
 ) -> dict:
     id_token: dict[str, str] = {}
     if email:
@@ -25,12 +37,17 @@ def make_auth(
         id_token["sub"] = subject
     if account_id:
         id_token["https://api.openai.com/auth"] = {"chatgpt_account_id": account_id}
-    return {
+    auth = {
         "tokens": {
             "refresh_token": refresh_token,
             "id_token": id_token,
         }
     }
+    if access_exp is not None:
+        auth["tokens"]["access_token"] = make_jwt({"exp": access_exp})
+    if last_refresh is not None:
+        auth["last_refresh"] = last_refresh
+    return auth
 
 
 class SyncActiveTests(unittest.TestCase):
@@ -107,6 +124,48 @@ class SyncActiveTests(unittest.TestCase):
                 status = read_json(status_path(paths, "main"))
                 self.assertEqual("warning", status["state"])
                 self.assertIn("skipped sync", status["message"])
+
+    def test_sync_active_keeps_manager_copy_when_live_auth_is_not_newer(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "CODEX_HOME": f"{tmpdir}/codex",
+                    "CODEX_MANAGER_HOME": f"{tmpdir}/manager",
+                },
+                clear=False,
+            ):
+                paths = Paths()
+                ensure_dirs(paths)
+                save_state(paths, {"active": "main"})
+
+                stored_auth = make_auth(
+                    refresh_token="same-refresh",
+                    account_id="acct-main",
+                    email="main@example.com",
+                    subject="user-main",
+                    access_exp=200,
+                    last_refresh="2026-05-22T10:00:00+00:00",
+                )
+                current_auth = make_auth(
+                    refresh_token="same-refresh",
+                    account_id="acct-main",
+                    email="main@example.com",
+                    subject="user-main",
+                    access_exp=100,
+                    last_refresh="2026-05-22T09:00:00+00:00",
+                )
+
+                atomic_write_json(account_path(paths, "main"), stored_auth)
+                atomic_write_json(paths.codex_auth, current_auth)
+
+                sync_active(paths)
+
+                unchanged_auth = read_json(account_path(paths, "main"))
+                self.assertEqual(
+                    stored_auth["tokens"]["access_token"],
+                    unchanged_auth["tokens"]["access_token"],
+                )
 
 
 class AddAccountTests(unittest.TestCase):

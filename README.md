@@ -6,6 +6,7 @@ A local token switcher for multiple Codex ChatGPT `auth.json` accounts.
 account out to `~/.codex/auth.json`, and runs background maintenance that:
 
 - syncs the active `~/.codex/auth.json` back into its stored account file because Codex may refresh it;
+- only syncs that active auth back when the current `auth.json` still matches the stored account identity;
 - refreshes inactive accounts only when their access token is near expiry or their `last_refresh` is old;
 - sends token refresh requests through the configured proxy when one is set;
 - fetches Codex usage limits during `check`/maintenance and caches them for `ls`;
@@ -26,6 +27,9 @@ codex-manager maintain --quiet
 `codex-manager ls` is interactive when run in a terminal: use up/down and Enter to choose the
 active account, or press `d` to delete the selected inactive account. `ls` shows cached 5-hour and
 weekly limits from the latest `check`/maintenance run and does not make network requests.
+
+When `codex-manager add` imports the live `~/.codex/auth.json`, the manager treats that imported
+account as active if the live auth no longer matches the previously recorded active account.
 
 `codex-manager check` runs account maintenance immediately for every account, including the active
 one, refreshes any account whose access token is near expiry, and updates cached Codex usage

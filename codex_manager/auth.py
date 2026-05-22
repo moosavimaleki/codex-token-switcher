@@ -74,6 +74,47 @@ def account_metadata(auth: dict[str, Any]) -> dict[str, str | None]:
     }
 
 
+def auth_identity(auth: dict[str, Any]) -> dict[str, str]:
+    tokens = auth.get("tokens") if isinstance(auth.get("tokens"), dict) else {}
+    id_token = tokens.get("id_token")
+    info = id_token if isinstance(id_token, dict) else None
+    if info is None:
+        info = jwt_claims(id_token) if isinstance(id_token, str) else None
+    info = info or {}
+    meta = account_metadata(auth)
+
+    identity: dict[str, str] = {}
+    for key, value in {
+        "account_id": meta.get("account_id"),
+        "email": meta.get("email"),
+        "subject": info.get("sub"),
+    }.items():
+        if isinstance(value, str) and value:
+            identity[key] = value
+    return identity
+
+
+def same_account_identity(expected: dict[str, Any], candidate: dict[str, Any]) -> tuple[bool, str]:
+    expected_identity = auth_identity(expected)
+    candidate_identity = auth_identity(candidate)
+    if not expected_identity or not candidate_identity:
+        return False, "could not verify account identity"
+
+    shared_keys = sorted(set(expected_identity) & set(candidate_identity))
+    if not shared_keys:
+        return False, "no shared identity fields to compare"
+
+    mismatches = [
+        key for key in shared_keys
+        if expected_identity[key] != candidate_identity[key]
+    ]
+    if mismatches:
+        key_list = ", ".join(mismatches)
+        return False, f"identity mismatch on {key_list}"
+
+    return True, f"matched on {', '.join(shared_keys)}"
+
+
 def should_refresh(auth: dict[str, Any]) -> tuple[bool, str]:
     exp = access_expiry(auth)
     if exp is not None:

@@ -5,7 +5,7 @@ import sys
 import time
 from pathlib import Path
 
-from ..auth import account_metadata, read_auth
+from ..auth import account_metadata, read_auth, same_account_identity
 from ..errors import ManagerError
 from ..paths import Paths, account_path, ensure_dirs, list_accounts, sanitize_name, status_path
 from ..storage import atomic_write_json, load_state, manager_lock, save_state, write_log
@@ -15,6 +15,20 @@ from ..views import describe_account, print_accounts
 
 def atomic_copy_auth(src: Path, dst: Path) -> None:
     atomic_write_json(dst, read_auth(src))
+
+
+def imported_live_auth_should_become_active(paths: Paths, active: str | None, auth: dict) -> bool:
+    if active is None:
+        return True
+    active_path = account_path(paths, active)
+    if not active_path.exists():
+        return True
+    try:
+        stored_active_auth = read_auth(active_path)
+    except ManagerError:
+        return True
+    same_identity, _reason = same_account_identity(stored_active_auth, auth)
+    return not same_identity
 
 
 def write_status(
@@ -44,11 +58,13 @@ def cmd_add(args) -> int:
             raise ManagerError(f"account already exists: {name} (use --force to overwrite)")
         atomic_write_json(dst, auth)
         state = load_state(paths)
-        if state.get("active") is None and src == paths.codex_auth.resolve():
+        live_auth_import = src == paths.codex_auth.resolve()
+        if live_auth_import and imported_live_auth_should_become_active(paths, state.get("active"), auth):
             state["active"] = name
             state["last_activated_at"] = iso_now()
+            write_log(paths, f"tracked live Codex auth as active account {name}")
         save_state(paths, state)
-        write_status(paths, name, "ok", "imported")
+        write_status(paths, name, "ok", "active" if state.get("active") == name else "imported")
     meta = account_metadata(auth)
     print(f"added {name}: {meta.get('email') or 'unknown email'}")
     return 0
@@ -59,12 +75,23 @@ def sync_active(paths: Paths) -> None:
     active = state.get("active")
     if not active or not paths.codex_auth.exists():
         return
+    active_path = account_path(paths, active)
+    if not active_path.exists():
+        write_status(paths, active, "warning", "active account file is missing; skipped sync")
+        return
     try:
         auth = read_auth(paths.codex_auth)
+        stored_auth = read_auth(active_path)
     except ManagerError as exc:
         write_status(paths, active, "warning", f"could not sync active auth: {exc}")
         return
-    atomic_write_json(account_path(paths, active), auth)
+    same_identity, reason = same_account_identity(stored_auth, auth)
+    if not same_identity:
+        message = f"skipped sync: {reason}"
+        write_status(paths, active, "warning", message)
+        write_log(paths, f"skipped syncing active auth for {active}: {reason}")
+        return
+    atomic_write_json(active_path, auth)
 
 
 def activate(paths: Paths, name: str) -> None:

@@ -5,6 +5,7 @@ import sys
 
 from .commands import (
     cmd_add,
+    cmd_chart,
     cmd_check,
     cmd_compact,
     cmd_config,
@@ -18,11 +19,11 @@ from .errors import ManagerError
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="codex-manager")
-    sub = parser.add_subparsers(dest="cmd", required=True)
+    sub = parser.add_subparsers(dest="cmd")
 
     add = sub.add_parser("add", help="import a healthy ChatGPT auth.json")
-    add.add_argument("name")
-    add.add_argument("auth_json")
+    add.add_argument("name", nargs="?")
+    add.add_argument("auth_json", nargs="?")
     add.add_argument("--force", action="store_true")
     add.set_defaults(func=cmd_add)
 
@@ -39,6 +40,22 @@ def build_parser() -> argparse.ArgumentParser:
     check.add_argument("--refresh-active", action="store_true", help="also refresh the active live Codex account")
     check.add_argument("--quiet", action="store_true")
     check.set_defaults(func=cmd_check)
+
+    chart = sub.add_parser("chart", help="open the Textual history chart")
+    chart.add_argument("--account", help="account name")
+    chart.add_argument("--hours", type=int, help="look back N recent hours")
+    chart.add_argument("--days", type=int, help="look back N recent days")
+    chart.add_argument(
+        "--window-offset",
+        type=int,
+        default=0,
+        help="shift the window back by N hours or days, matching the selected unit",
+    )
+    chart.add_argument(
+        "--timezone",
+        help="timezone offset for axis labels, for example local, UTC, +03:30, or -07:00",
+    )
+    chart.set_defaults(func=cmd_chart)
 
     compact = sub.add_parser("compact", help="compact a Codex session with a selected account")
     compact.add_argument("session_id", help="Codex thread/session id or rollout .jsonl path")
@@ -60,7 +77,9 @@ def build_parser() -> argparse.ArgumentParser:
     config_set = config_sub.add_parser("set", help="update config")
     config_set.add_argument("--proxy", help="HTTP/HTTPS proxy URL, or 'none' to disable")
     config_set.add_argument("--interval", help="maintenance interval, for example 30m, 6h, or 1d")
+    config_set.add_argument("--monitor-interval", help="history/check interval, for example 5min")
     config_set.add_argument("--randomized-delay", help="systemd randomized delay, for example 0s or 10min")
+    config_set.add_argument("--history-retention-days", type=int, help="how many days of limit history to keep")
     config_set.add_argument("--apply-scheduler", action="store_true", help="rewrite and restart the installed timer")
     config_set.add_argument("--bin", help="codex-manager executable path for scheduler apply")
     config_set.set_defaults(func=cmd_config)
@@ -83,6 +102,10 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if getattr(args, "cmd", None) is None:
+        args.cmd = "ls"
+        args.plain = False
+        args.func = cmd_ls
     try:
         return args.func(args)
     except ManagerError as exc:

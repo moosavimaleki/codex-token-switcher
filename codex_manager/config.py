@@ -4,7 +4,12 @@ import re
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
-from .constants import DEFAULT_MAINTAIN_INTERVAL, DEFAULT_RANDOMIZED_DELAY
+from .constants import (
+    DEFAULT_HISTORY_RETENTION_DAYS,
+    DEFAULT_MAINTAIN_INTERVAL,
+    DEFAULT_MONITOR_INTERVAL,
+    DEFAULT_RANDOMIZED_DELAY,
+)
 from .errors import ManagerError
 from .paths import Paths, ensure_dirs
 from .storage import atomic_write_json, read_json
@@ -12,7 +17,9 @@ from .storage import atomic_write_json, read_json
 DEFAULT_CONFIG: dict[str, Any] = {
     "proxy": None,
     "maintain_interval": DEFAULT_MAINTAIN_INTERVAL,
+    "monitor_interval": DEFAULT_MONITOR_INTERVAL,
     "randomized_delay": DEFAULT_RANDOMIZED_DELAY,
+    "history_retention_days": DEFAULT_HISTORY_RETENTION_DAYS,
 }
 
 _DURATION_RE = re.compile(r"^\s*(\d+)\s*([A-Za-z]+)?\s*$")
@@ -78,14 +85,19 @@ def normalize_proxy(value: Any) -> str | None:
 def normalize_config(config: dict[str, Any]) -> dict[str, Any]:
     merged = dict(DEFAULT_CONFIG)
     merged.update(config)
+    retention_days = merged.get("history_retention_days")
+    if not isinstance(retention_days, int) or retention_days < 1:
+        raise ManagerError("history_retention_days must be a positive integer")
     return {
         "proxy": normalize_proxy(merged.get("proxy")),
         "maintain_interval": normalize_duration(merged.get("maintain_interval"), "maintain_interval"),
+        "monitor_interval": normalize_duration(merged.get("monitor_interval"), "monitor_interval"),
         "randomized_delay": normalize_duration(
             merged.get("randomized_delay"),
             "randomized_delay",
             allow_zero=True,
         ),
+        "history_retention_days": retention_days,
     }
 
 

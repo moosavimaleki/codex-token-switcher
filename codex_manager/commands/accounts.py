@@ -49,12 +49,25 @@ def write_status(
 
 def cmd_add(args) -> int:
     paths = Paths()
-    name = sanitize_name(args.name)
-    src = Path(args.auth_json).expanduser().resolve()
+    if not getattr(args, "name", None) or not getattr(args, "auth_json", None):
+        if sys.stdin.isatty() and sys.stdout.isatty():
+            from ..textual_ui import run_textual_dashboard
+
+            run_textual_dashboard(paths, initial_tab="add")
+            return 0
+        raise ManagerError("`codex-manager add` needs <name> and <auth.json> outside an interactive terminal")
+    meta = add_account(paths, args.name, args.auth_json, force=args.force)
+    print(f"added {sanitize_name(args.name)}: {meta.get('email') or 'unknown email'}")
+    return 0
+
+
+def add_account(paths: Paths, name: str, auth_json: str, force: bool = False) -> dict:
+    name = sanitize_name(name)
+    src = Path(auth_json).expanduser().resolve()
     auth = read_auth(src)
     with manager_lock(paths):
         dst = account_path(paths, name)
-        if dst.exists() and not args.force:
+        if dst.exists() and not force:
             raise ManagerError(f"account already exists: {name} (use --force to overwrite)")
         atomic_write_json(dst, auth)
         state = load_state(paths)
@@ -65,9 +78,7 @@ def cmd_add(args) -> int:
             write_log(paths, f"tracked live Codex auth as active account {name}")
         save_state(paths, state)
         write_status(paths, name, "ok", "active" if state.get("active") == name else "imported")
-    meta = account_metadata(auth)
-    print(f"added {name}: {meta.get('email') or 'unknown email'}")
-    return 0
+    return account_metadata(auth)
 
 
 def sync_active(paths: Paths) -> None:
@@ -263,5 +274,10 @@ def cmd_ls(args) -> int:
     ensure_dirs(paths)
     if args.plain:
         print_accounts(paths)
+        return 0
+    if sys.stdin.isatty() and sys.stdout.isatty():
+        from ..textual_ui import run_textual_dashboard
+
+        run_textual_dashboard(paths, initial_tab="accounts")
         return 0
     return interactive_ls(paths)

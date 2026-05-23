@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from .accounts import (
     activate,
+    add_account,
     atomic_copy_auth,
     cmd_add,
     cmd_ls,
@@ -11,6 +12,7 @@ from .accounts import (
     sync_live_auth_to_matching_account,
     write_status,
 )
+from .chart import cmd_chart
 from .compact import (
     checked_out_app_server_auth,
     cmd_compact,
@@ -35,10 +37,12 @@ from .scheduler import (
 __all__ = [
     "CRON_MARKER",
     "activate",
+    "add_account",
     "apply_scheduler",
     "atomic_copy_auth",
     "checked_out_app_server_auth",
     "cmd_add",
+    "cmd_chart",
     "cmd_check",
     "cmd_compact",
     "cmd_config",

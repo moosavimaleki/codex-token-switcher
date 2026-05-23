@@ -5,6 +5,7 @@ from ..auth import read_auth, refresh_auth, should_refresh
 from ..codex.limits import LimitFetchError, fetch_rate_limits, format_rate_limits_summary
 from ..config import ensure_config
 from ..errors import ManagerError
+from ..history import append_rate_limit_history, prune_rate_limit_history
 from ..paths import Paths, account_path, ensure_dirs, list_accounts
 from ..storage import atomic_write_json, load_state, manager_lock, write_log
 from ..terminal import badge, dim
@@ -79,6 +80,7 @@ def run_account_checks(paths: Paths, include_active: bool, force_refresh: bool =
                     rate_limits=rate_limits,
                     limits_error=limits_error,
                 )
+                append_rate_limit_history(paths, name, rate_limits)
                 display_limits = format_rate_limits_summary(rate_limits) if rate_limits else limits_error
                 results.append({
                     "name": name,
@@ -91,6 +93,7 @@ def run_account_checks(paths: Paths, include_active: bool, force_refresh: bool =
                 write_status(paths, name, "needs_login", str(exc))
                 write_log(paths, f"account {name} needs attention: {exc}")
                 results.append({"name": name, "state": "needs_login", "message": str(exc)})
+        prune_rate_limit_history(paths, int(config["history_retention_days"]))
     return {"refreshed": refreshed, "failures": failures, "results": results}
 
 

@@ -1,6 +1,6 @@
 # codex-manager
 
-A local token switcher for multiple Codex ChatGPT `auth.json` accounts.
+A local token switcher and monitoring workspace for multiple Codex ChatGPT `auth.json` accounts.
 
 `codex-manager` stores account auth files under `~/.codex-manager/accounts`, checks one selected
 account out to `~/.codex/auth.json`, and runs background maintenance that:
@@ -10,7 +10,7 @@ account out to `~/.codex/auth.json`, and runs background maintenance that:
 - treats `~/.codex-manager/accounts/*.json` as the source of truth and only promotes live `~/.codex/auth.json` when it is both the same account and provably newer;
 - refreshes inactive accounts only when their access token is near expiry or their `last_refresh` is old;
 - sends token refresh requests through the configured proxy when one is set;
-- fetches Codex usage limits during `check`/maintenance and caches them for `ls`;
+- fetches Codex usage limits during `check`/maintenance, caches them for `ls`, and appends them to a local history log for charting;
 - never auto-switches accounts.
 
 ## Commands
@@ -19,24 +19,31 @@ account out to `~/.codex/auth.json`, and runs background maintenance that:
 codex-manager add <name> <path-to-working-auth.json>
 codex-manager ls
 codex-manager check
+codex-manager chart --hours 24
 codex-manager compact <session_id>
 codex-manager config
 codex-manager doctor
 codex-manager maintain --quiet
 ```
 
-`codex-manager ls` is interactive when run in a terminal: use up/down and Enter to choose the
-active account, or press `d` to delete the selected inactive account. `ls` shows cached 5-hour and
-weekly limits from the latest `check`/maintenance run and does not make network requests.
+`codex-manager ls` opens a Textual dashboard when run in an interactive terminal. The dashboard uses
+a Dracula palette and gives you one workspace for account browsing, activation, deletion, imports,
+and history charts. `ls` shows cached 5-hour and weekly limits from the latest `check`/maintenance
+run and does not make network requests itself.
 
 When `codex-manager add` imports the live `~/.codex/auth.json`, the manager treats that imported
 account as active if the live auth no longer matches the previously recorded active account.
+Running `codex-manager add` with no positional arguments opens the Textual import form instead.
 
 `codex-manager check` runs account maintenance immediately for every account, refreshes inactive
-accounts whose access token is near expiry, and updates cached Codex usage limits. The live active
+accounts whose access token is near expiry, updates cached Codex usage limits, and appends samples
+to `~/.codex-manager/history/limits.jsonl`. The live active
 Codex account is not refreshed by default because Codex itself may be rotating that token; pass
 `--refresh-active` only when you intentionally want the manager to refresh the active account.
 Use `--force-refresh` when you want to force refresh requests for inactive accounts.
+
+`codex-manager chart` opens the Textual chart tab directly. Use `--hours N` or `--days N` and
+`--offset local|UTC|+03:30|-07:00` to control the history window and timezone labeling.
 
 `codex-manager compact <session_id>` prints the same account health/limit context as `ls`, asks
 which account should compact the session, resumes that session inside Codex's own `app-server`,
@@ -69,10 +76,17 @@ The setup script installs:
 
 - launcher: `~/.local/bin/codex-manager`
 - package files: `~/.local/share/codex-manager/codex_manager/`
+- pinned UI/runtime dependencies from `requirements.txt` into the user site for the same Python interpreter that runs the launcher
 - user data: `~/.codex-manager/`
 
-Maintenance is scheduled every 6 hours using a user systemd timer when available, otherwise a crontab entry.
-The interval is read from `~/.codex-manager/config.json`; after changing it, run:
+The installer intentionally avoids virtualenvs. On distributions such as Debian/Ubuntu it uses
+`pip --user --break-system-packages` for the selected interpreter so Textual dependencies end up in
+the same Python environment that launches `codex-manager`.
+
+Maintenance is scheduled every 6 hours using a user systemd timer when available, otherwise a
+crontab entry. A second 5-minute monitor timer runs `codex-manager check --quiet` so limit history
+stays fresh for charting. The intervals are read from `~/.codex-manager/config.json`; after changing
+them, run:
 
 ```bash
 codex-manager config
@@ -86,7 +100,9 @@ Default config:
 {
   "proxy": null,
   "maintain_interval": "6h",
-  "randomized_delay": "10min"
+  "monitor_interval": "5min",
+  "randomized_delay": "10min",
+  "history_retention_days": 90
 }
 ```
 
@@ -99,6 +115,7 @@ the scheduler in one pass.
 - active Codex auth: `~/.codex/auth.json`
 - manager config: `~/.codex-manager/config.json`
 - manager store: `~/.codex-manager/accounts/*.json`
+- manager history: `~/.codex-manager/history/limits.jsonl`
 - manager state: `~/.codex-manager/state.json`
 - maintenance log: `~/.codex-manager/log.txt`
 

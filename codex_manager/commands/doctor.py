@@ -35,6 +35,8 @@ def cmd_doctor(args) -> int:
     print(f"{style('Config', 'bold'):<22} {paths.config_file}")
     print(f"{style('Proxy', 'bold'):<22} {redact_url(config.get('proxy'))}")
     print(f"{style('Job interval', 'bold'):<22} {config['maintain_interval']} (+ random {config['randomized_delay']})")
+    print(f"{style('Monitor interval', 'bold'):<22} {config['monitor_interval']}")
+    print(f"{style('History retention', 'bold'):<22} {config['history_retention_days']} day(s)")
     print(f"{style('Selected account', 'bold'):<22} {selected}")
     print(f"{style('Accounts', 'bold'):<22} {len(accounts)}")
     print(f"{style('Refresh policy', 'bold'):<22} inactive tokens refresh when access token <= {warn(human_delta(DEFAULT_REFRESH_MARGIN))} or last_refresh >= {warn(human_delta(DEFAULT_LAST_REFRESH_MAX_AGE))}")
@@ -66,6 +68,7 @@ def cmd_doctor(args) -> int:
     print(f"{colored_mode(paths.state_file, '600')}  {paths.state_file}")
     print(f"{colored_mode(paths.lock_file, '600')}  {paths.lock_file}")
     print(f"{colored_mode(paths.log_file, '600')}  {paths.log_file}")
+    print(f"{colored_mode(paths.history_file, '600')}  {paths.history_file}")
     for name in accounts:
         path = account_path(paths, name)
         print(f"{colored_mode(path, '600')}  {path}")
@@ -73,13 +76,20 @@ def cmd_doctor(args) -> int:
     section("Scheduler")
     service_path = paths.home / ".config/systemd/user/codex-manager-maintain.service"
     timer_path = paths.home / ".config/systemd/user/codex-manager-maintain.timer"
+    monitor_service_path = paths.home / ".config/systemd/user/codex-manager-check.service"
+    monitor_timer_path = paths.home / ".config/systemd/user/codex-manager-check.timer"
     print(f"{style('systemd service', 'bold'):<22} {colored_mode(service_path)}  {service_path}")
     print(f"{style('systemd timer', 'bold'):<22} {colored_mode(timer_path)}  {timer_path}")
+    print(f"{style('monitor service', 'bold'):<22} {colored_mode(monitor_service_path)}  {monitor_service_path}")
+    print(f"{style('monitor timer', 'bold'):<22} {colored_mode(monitor_timer_path)}  {monitor_timer_path}")
     if shutil.which("systemctl"):
         print_command_output("timer status", ["systemctl", "--user", "status", "codex-manager-maintain.timer", "--no-pager"], timeout=8)
         print_command_output("timer schedule", ["systemctl", "--user", "list-timers", "codex-manager-maintain.timer", "--no-pager"], timeout=8)
         print_command_output("service status", ["systemctl", "--user", "status", "codex-manager-maintain.service", "--no-pager"], timeout=8)
         print_command_output("service journal", ["journalctl", "--user", "-u", "codex-manager-maintain.service", "-n", str(args.journal_lines), "--no-pager"], timeout=8)
+        print_command_output("monitor status", ["systemctl", "--user", "status", "codex-manager-check.timer", "--no-pager"], timeout=8)
+        print_command_output("monitor schedule", ["systemctl", "--user", "list-timers", "codex-manager-check.timer", "--no-pager"], timeout=8)
+        print_command_output("monitor journal", ["journalctl", "--user", "-u", "codex-manager-check.service", "-n", str(args.journal_lines), "--no-pager"], timeout=8)
     else:
         print(warn("systemctl not found"))
 

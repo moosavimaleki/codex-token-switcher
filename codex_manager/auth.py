@@ -94,6 +94,13 @@ def auth_identity(auth: dict[str, Any]) -> dict[str, str]:
     return identity
 
 
+def format_identity(auth: dict[str, Any]) -> str:
+    identity = auth_identity(auth)
+    if not identity:
+        return "unknown identity"
+    return ", ".join(f"{key}={value}" for key, value in sorted(identity.items()))
+
+
 def same_account_identity(expected: dict[str, Any], candidate: dict[str, Any]) -> tuple[bool, str]:
     expected_identity = auth_identity(expected)
     candidate_identity = auth_identity(candidate)
@@ -109,8 +116,11 @@ def same_account_identity(expected: dict[str, Any], candidate: dict[str, Any]) -
         if expected_identity[key] != candidate_identity[key]
     ]
     if mismatches:
-        key_list = ", ".join(mismatches)
-        return False, f"identity mismatch on {key_list}"
+        details = ", ".join(
+            f"{key}: stored={expected_identity[key]} live={candidate_identity[key]}"
+            for key in mismatches
+        )
+        return False, f"identity mismatch ({details})"
 
     return True, f"matched on {', '.join(shared_keys)}"
 

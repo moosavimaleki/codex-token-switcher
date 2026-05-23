@@ -8,6 +8,7 @@ from .accounts import (
     delete_account,
     interactive_ls,
     sync_active,
+    sync_live_auth_to_matching_account,
     write_status,
 )
 from .compact import (
@@ -61,6 +62,7 @@ __all__ = [
     "scheduler_paths",
     "select_account_for_compact",
     "sync_active",
+    "sync_live_auth_to_matching_account",
     "write_status",
     "write_text_file",
 ]

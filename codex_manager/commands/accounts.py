@@ -5,7 +5,7 @@ import sys
 import time
 from pathlib import Path
 
-from ..auth import account_metadata, read_auth, same_account_identity, should_promote_live_auth
+from ..auth import account_metadata, format_identity, read_auth, same_account_identity, should_promote_live_auth
 from ..errors import ManagerError
 from ..paths import Paths, account_path, ensure_dirs, list_accounts, sanitize_name, status_path
 from ..storage import atomic_write_json, load_state, manager_lock, save_state, write_log
@@ -99,6 +99,53 @@ def sync_active(paths: Paths) -> None:
     atomic_write_json(active_path, auth)
     write_status(paths, active, "ok", f"synced from live auth: {promotion_reason}")
     write_log(paths, f"synced live auth back into manager for {active}: {promotion_reason}")
+
+
+def sync_live_auth_to_matching_account(paths: Paths) -> str | None:
+    if not paths.codex_auth.exists():
+        return None
+    try:
+        live_auth = read_auth(paths.codex_auth)
+    except ManagerError:
+        return None
+
+    matches: list[tuple[str, dict]] = []
+    for name in list_accounts(paths):
+        try:
+            stored_auth = read_auth(account_path(paths, name))
+        except ManagerError:
+            continue
+        same_identity, _reason = same_account_identity(stored_auth, live_auth)
+        if same_identity:
+            matches.append((name, stored_auth))
+
+    if not matches:
+        active = load_state(paths).get("active")
+        message = f"live Codex auth does not match any stored account: {format_identity(live_auth)}"
+        if active:
+            write_status(paths, active, "warning", message)
+        write_log(paths, message)
+        return None
+
+    if len(matches) > 1:
+        names = ", ".join(name for name, _auth in matches)
+        write_log(paths, f"live Codex auth matched multiple accounts; skipped sync: {names}")
+        return None
+
+    name, stored_auth = matches[0]
+    should_promote, promotion_reason = should_promote_live_auth(stored_auth, live_auth)
+    if should_promote:
+        atomic_write_json(account_path(paths, name), live_auth)
+        write_status(paths, name, "ok", f"synced from live auth: {promotion_reason}")
+        write_log(paths, f"synced live auth into account {name}: {promotion_reason}")
+
+    state = load_state(paths)
+    if state.get("active") != name:
+        state["active"] = name
+        state["last_activated_at"] = iso_now()
+        save_state(paths, state)
+        write_log(paths, f"tracked live Codex auth as active account {name}")
+    return name
 
 
 def activate(paths: Paths, name: str) -> None:

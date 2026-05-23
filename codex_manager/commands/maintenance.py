@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .accounts import sync_active, write_status
+from .accounts import sync_active, sync_live_auth_to_matching_account, write_status
 from ..auth import read_auth, refresh_auth, should_refresh
 from ..codex.limits import LimitFetchError, fetch_rate_limits, format_rate_limits_summary
 from ..config import ensure_config
@@ -17,8 +17,9 @@ def run_account_checks(paths: Paths, include_active: bool, force_refresh: bool =
     failures = 0
     with manager_lock(paths):
         ensure_dirs(paths)
+        if sync_live_auth_to_matching_account(paths) is None:
+            sync_active(paths)
         active = load_state(paths).get("active")
-        sync_active(paths)
         for name in list_accounts(paths):
             path = account_path(paths, name)
             try:
@@ -27,7 +28,7 @@ def run_account_checks(paths: Paths, include_active: bool, force_refresh: bool =
                 if force_refresh:
                     needed = True
                     reason = f"force refresh requested; {reason}"
-                if name == active and not include_active and not force_refresh:
+                if name == active and not include_active:
                     needed = False
                     reason = "active; synced, skipped refresh"
                 refreshed_now = False
@@ -50,7 +51,12 @@ def run_account_checks(paths: Paths, include_active: bool, force_refresh: bool =
                 try:
                     rate_limits = fetch_rate_limits(checked_auth, proxy_url=config.get("proxy"))
                 except LimitFetchError as exc:
-                    if exc.status_code in {401, 403} and not refreshed_now:
+                    can_refresh_after_limits_failure = (
+                        exc.status_code in {401, 403}
+                        and not refreshed_now
+                        and (name != active or include_active)
+                    )
+                    if can_refresh_after_limits_failure:
                         refreshed_auth = refresh_auth(checked_auth, proxy_url=config.get("proxy"))
                         atomic_write_json(path, refreshed_auth)
                         if name == active:
@@ -101,7 +107,7 @@ def cmd_maintain(args) -> int:
 
 def cmd_check(args) -> int:
     paths = Paths()
-    summary = run_account_checks(paths, include_active=True, force_refresh=args.force_refresh)
+    summary = run_account_checks(paths, include_active=args.refresh_active, force_refresh=args.force_refresh)
     if not args.quiet:
         for result in summary["results"]:
             state = str(result["state"])

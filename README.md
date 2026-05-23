@@ -32,9 +32,11 @@ weekly limits from the latest `check`/maintenance run and does not make network 
 When `codex-manager add` imports the live `~/.codex/auth.json`, the manager treats that imported
 account as active if the live auth no longer matches the previously recorded active account.
 
-`codex-manager check` runs account maintenance immediately for every account, including the active
-one, refreshes any account whose access token is near expiry, and updates cached Codex usage
-limits. Use `--force-refresh` when you want to force a refresh request for every account.
+`codex-manager check` runs account maintenance immediately for every account, refreshes inactive
+accounts whose access token is near expiry, and updates cached Codex usage limits. The live active
+Codex account is not refreshed by default because Codex itself may be rotating that token; pass
+`--refresh-active` only when you intentionally want the manager to refresh the active account.
+Use `--force-refresh` when you want to force refresh requests for inactive accounts.
 
 `codex-manager compact <session_id>` prints the same account health/limit context as `ls`, asks
 which account should compact the session, resumes that session inside Codex's own `app-server`,

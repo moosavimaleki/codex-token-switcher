@@ -35,7 +35,8 @@ def build_parser() -> argparse.ArgumentParser:
     maintain.set_defaults(func=cmd_maintain)
 
     check = sub.add_parser("check", help="check all accounts now and refresh when needed")
-    check.add_argument("--force-refresh", action="store_true", help="refresh every account even if access token looks valid")
+    check.add_argument("--force-refresh", action="store_true", help="refresh inactive accounts even if access token looks valid")
+    check.add_argument("--refresh-active", action="store_true", help="also refresh the active live Codex account")
     check.add_argument("--quiet", action="store_true")
     check.set_defaults(func=cmd_check)
 

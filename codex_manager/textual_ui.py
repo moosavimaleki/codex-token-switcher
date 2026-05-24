@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 
 from .errors import ManagerError
@@ -19,9 +20,14 @@ class ChartDefaults:
 
 
 def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart: ChartDefaults | None = None) -> None:
+    os.environ.pop("NO_COLOR", None)
+    os.environ.setdefault("FORCE_COLOR", "1")
+    os.environ.setdefault("COLORTERM", "truecolor")
     try:
+        from rich.text import Text
         from textual.app import App, ComposeResult
         from textual.containers import Horizontal, Vertical
+        from textual.screen import ModalScreen
         from textual.widgets import Button, Footer, Header, Input, Select, Static, TabbedContent, TabPane
         from textual_plotext import PlotextPlot
     except ImportError as exc:
@@ -30,6 +36,35 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
         ) from exc
 
     from .commands.accounts import activate, add_account, delete_account
+
+    class DeleteConfirmModal(ModalScreen[str | None]):
+        BINDINGS = [("escape", "cancel", "Cancel")]
+
+        def __init__(self, account: str) -> None:
+            super().__init__()
+            self.account = account
+
+        def compose(self) -> ComposeResult:
+            with Vertical(id="delete-dialog"):
+                yield Static("Delete account?", classes="title")
+                yield Static(f"Account: {self.account}", id="delete-account-name")
+                yield Static(
+                    "This removes the stored auth.json copy and status file from codex-manager. "
+                    "It will not delete the currently active Codex auth, but the manager account entry is gone.",
+                    id="delete-warning",
+                )
+                with Horizontal(id="delete-actions", classes="button-row"):
+                    yield Button("Cancel", id="cancel-delete")
+                    yield Button("Delete Account", id="confirm-delete", variant="error")
+
+        def on_button_pressed(self, event: Button.Pressed) -> None:
+            if event.button.id == "confirm-delete":
+                self.dismiss(self.account)
+            else:
+                self.dismiss(None)
+
+        def action_cancel(self) -> None:
+            self.dismiss(None)
 
     class ManagerApp(App[None]):
         CSS = """
@@ -73,11 +108,19 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
         #accounts-layout, #chart-layout {
             height: 1fr;
         }
-        #accounts-left, #chart-controls, #add-form {
+        #accounts-left {
+            width: 7fr;
+        }
+        #accounts-right {
+            width: 3fr;
+            margin-right: 0;
+        }
+        #chart-controls, #add-form {
             width: 38;
         }
-        #accounts-right, #chart-panel {
+        #chart-panel {
             width: 1fr;
+            margin-right: 0;
         }
         Input, Select {
             margin-bottom: 1;
@@ -91,7 +134,7 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
             background: #282a36;
             color: #f8f8f2;
         }
-        #account-table, #account-detail, #chart-status, #add-status {
+        #account-detail, #chart-status, #add-status {
             height: 1fr;
         }
         #account-table, #chart-status, #add-status {
@@ -104,6 +147,33 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
         #chart-plot {
             height: 1fr;
             background: #282a36;
+        }
+        #chart-legend {
+            height: 1;
+            margin-bottom: 1;
+        }
+        DeleteConfirmModal {
+            align: center middle;
+        }
+        #delete-dialog {
+            width: 64;
+            height: auto;
+            border: round #ff5555;
+            background: #21222c;
+            padding: 1 2;
+        }
+        #delete-account-name {
+            color: #ff5555;
+            text-style: bold;
+            margin-bottom: 1;
+        }
+        #delete-warning {
+            color: #ffb86c;
+            margin-bottom: 1;
+        }
+        #delete-actions {
+            height: auto;
+            align-horizontal: right;
         }
         """
 
@@ -130,13 +200,13 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
                             yield Static("", id="account-table")
                             with Horizontal(classes="button-row"):
                                 yield Button("Activate", id="activate")
-                                yield Button("Delete", id="delete", variant="error")
+                                yield Button("Delete...", id="delete", variant="error")
                             with Horizontal(classes="button-row"):
                                 yield Button("Add Account", id="open-add", variant="success")
                                 yield Button("Open Chart", id="open-chart", variant="primary")
                         with Vertical(id="accounts-right", classes="panel"):
                             yield Static("Selected Account", classes="title")
-                            yield Static("", id="account-detail")
+                            yield Static("", expand=True, id="account-detail")
                 with TabPane("Add", id="add"):
                     with Vertical(id="add-form", classes="panel"):
                         yield Static("Import A Healthy auth.json", classes="title")
@@ -176,9 +246,12 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
                             with Horizontal(classes="button-row"):
                                 yield Button("Render Chart", id="render-chart", variant="primary")
                                 yield Button("Sync From Accounts", id="chart-from-account")
+                            with Horizontal(classes="button-row"):
+                                yield Button("Activate", id="chart-activate", variant="success")
                             yield Static("", id="chart-status")
                         with Vertical(id="chart-panel", classes="panel"):
                             yield Static("Rate Limit History", classes="title")
+                            yield Static("", id="chart-legend")
                             yield PlotextPlot(id="chart-plot")
             yield Footer()
 
@@ -227,6 +300,8 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
                 self._render_chart()
             elif button_id == "chart-from-account":
                 self._push_selected_account_to_chart()
+            elif button_id == "chart-activate":
+                self._activate_chart_account()
 
         def _selected_account(self) -> str | None:
             value = self.query_one("#account-select", Select).value
@@ -258,24 +333,26 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
 
         def _refresh_chart_accounts(self) -> None:
             active = load_state(paths).get("active")
-            names = available_history_accounts(paths)
-            if not names:
-                names = list_accounts(paths)
+            names = sorted(set(available_history_accounts(paths)) | set(list_accounts(paths)))
             select = self.query_one("#chart-account", Select)
             select.set_options([(self._account_option_label(name, active), name) for name in names])
             if names and self._selected_chart_account() not in names:
-                select.value = names[0]
+                select.value = active if active in names else names[0]
 
         def _update_account_table(self, active: str | None) -> None:
             rows = [describe_account(paths, name, active) for name in list_accounts(paths)]
             if not rows:
                 self.query_one("#account-table", Static).update("No accounts tracked yet.")
                 return
-            lines = ["Primary  Name             State            Expires      Limits"]
+            lines = [
+                "On  Account       State    Limits",
+                "──  ────────────  ───────  ─────────────────────",
+            ]
             for row in rows:
-                marker = "PRIMARY" if row["name"] == active else "       "
+                marker = "●" if row["name"] == active else "○"
+                limits = row["limits"].replace("; ", " | ")
                 lines.append(
-                    f"{marker:<7} {row['name']:<16} {row['state']:<15} {row['expires']:<11} {row['limits'][:30]}"
+                    f"{marker:<2}  {row['name'][:12]:<12}  {row['state'][:7]:<7}  {limits}"
                 )
             self.query_one("#account-table", Static).update("\n".join(lines))
 
@@ -309,14 +386,41 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
                 return
             activate(paths, name)
             self._refresh_accounts()
+            self._refresh_chart_accounts()
             self._set_banner(f"Primary account switched to {name}. Restart Codex if you need the new auth picked up immediately.")
+
+        def _activate_chart_account(self) -> None:
+            name = self._selected_chart_account()
+            if not name:
+                self._set_banner("Select a chart account first.")
+                return
+            activate(paths, name)
+            self._refresh_accounts()
+            self._refresh_chart_accounts()
+            self.query_one("#chart-account", Select).value = name
+            self._set_banner(f"Primary account switched to {name} from Charts.")
+            self._render_chart_if_possible()
 
         def _delete_selected_account(self) -> None:
             name = self._selected_account()
             if not name:
                 self._set_banner("Select an account first.")
                 return
-            delete_account(paths, name)
+            self.push_screen(DeleteConfirmModal(name), self._delete_account_after_confirm)
+
+        def _delete_account_after_confirm(self, name: str | None) -> None:
+            if not name:
+                self._set_banner("Delete cancelled.")
+                return
+            active = load_state(paths).get("active")
+            if name == active:
+                self._set_banner("Cannot delete the active account. Activate another account first.")
+                return
+            try:
+                delete_account(paths, name)
+            except ManagerError as exc:
+                self._set_banner(str(exc))
+                return
             self._refresh_accounts()
             self._refresh_chart_accounts()
             self._set_banner(f"Deleted {name}.")
@@ -391,23 +495,31 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
                 return
             plot = self.query_one("#chart-plot", PlotextPlot)
             plt = plot.plt
+            plot.theme = "clear"
             plt.clear_figure()
             plt.theme("clear")
             plt.canvas_color("#282a36")
             plt.axes_color("#44475a")
             plt.ticks_color("#f8f8f2")
             plt.ticks_style("bold")
-            all_points = window.primary_points or window.secondary_points
+            all_points = (
+                window.primary_points
+                if len(window.primary_points) >= len(window.secondary_points)
+                else window.secondary_points
+            )
             x = list(range(len(all_points)))
             primary_values = [point[1] for point in window.primary_points]
             secondary_values = [point[1] for point in window.secondary_points]
             primary_x = list(range(len(window.primary_points)))
             secondary_x = list(range(len(window.secondary_points)))
+            primary_color = "cyan"
+            secondary_color = "magenta"
+            secondary_marker_color = "yellow"
             if primary_values:
-                plt.plot(primary_x, primary_values, color="#8be9fd", marker="dot")
+                plt.plot(primary_x, primary_values, color=primary_color, marker="dot")
             if secondary_values:
-                plt.scatter(secondary_x, secondary_values, color="#ffb86c", marker="hd")
-                plt.plot(secondary_x, secondary_values, color="#ff79c6", marker="braille")
+                plt.scatter(secondary_x, secondary_values, color=secondary_marker_color, marker="hd")
+                plt.plot(secondary_x, secondary_values, color=secondary_color, marker="braille")
             plt.title(
                 f"{window.account}  window={window.window_label}  offset={window.offset_label}  {window.timezone_label}"
             )
@@ -424,6 +536,13 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
             plt.xticks(tick_positions, tick_labels)
             plt.xfrequency(len(tick_positions))
             plot.refresh()
+            legend = Text()
+            legend.append("5h remaining", style="bold cyan")
+            legend.append("   ")
+            legend.append("weekly remaining", style="bold magenta")
+            legend.append("   ")
+            legend.append("weekly samples", style="bold yellow")
+            self.query_one("#chart-legend", Static).update(legend)
             self.query_one("#chart-status", Static).update(
                 f"5h line=cyan dots, weekly line=magenta with amber markers, samples={len(all_points)}, window={window.window_label}, lookback={window.offset_label}, tz={window.timezone_label}"
             )

@@ -53,7 +53,7 @@ def cmd_add(args) -> int:
         if sys.stdin.isatty() and sys.stdout.isatty():
             from ..textual_ui import run_textual_dashboard
 
-            run_textual_dashboard(paths, initial_tab="add")
+            run_textual_dashboard(paths, initial_tab="accounts")
             return 0
         raise ManagerError("`codex-manager add` needs <name> and <auth.json> outside an interactive terminal")
     meta = add_account(paths, args.name, args.auth_json, force=args.force)

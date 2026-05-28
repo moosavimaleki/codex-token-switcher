@@ -28,12 +28,18 @@ codex-manager maintain --quiet
 
 `codex-manager ls` opens a Textual dashboard when run in an interactive terminal. The dashboard uses
 a Dracula palette and gives you one workspace for account browsing, activation, deletion, imports,
-and history charts. `ls` shows cached 5-hour and weekly limits from the latest `check`/maintenance
-run and does not make network requests itself.
+and history charts. The Accounts tab also includes a `Check Now` button that runs the same account
+check flow as `codex-manager check`, refreshing cached limits and history samples in place. `ls`
+shows cached 5-hour and weekly limits from the latest `check`/maintenance run until you trigger
+that refresh.
 
 When `codex-manager add` imports the live `~/.codex/auth.json`, the manager treats that imported
 account as active if the live auth no longer matches the previously recorded active account.
-Running `codex-manager add` with no positional arguments opens the Textual import form instead.
+Running `codex-manager add` with no positional arguments opens the Textual Add tab instead. From
+there, `Start Device Login` requests a ChatGPT device code through Codex's app-server, shows the
+verification URL and one-time code, waits for Codex to receive tokens, and imports the resulting
+temporary `auth.json` without overwriting the currently active live Codex auth. Manual `auth.json`
+import remains available as a fallback.
 
 `codex-manager check` runs account maintenance immediately for every account, refreshes inactive
 accounts whose access token is near expiry, updates cached Codex usage limits, and appends samples

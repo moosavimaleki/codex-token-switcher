@@ -169,6 +169,32 @@ class SyncActiveTests(unittest.TestCase):
 
 
 class AddAccountTests(unittest.TestCase):
+    def test_cmd_add_without_arguments_opens_accounts_tab_in_interactive_terminal(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "CODEX_HOME": f"{tmpdir}/codex",
+                    "CODEX_MANAGER_HOME": f"{tmpdir}/manager",
+                },
+                clear=False,
+            ):
+                fake_stdin = mock.Mock()
+                fake_stdout = mock.Mock()
+                fake_stdin.isatty.return_value = True
+                fake_stdout.isatty.return_value = True
+
+                with (
+                    mock.patch("sys.stdin", fake_stdin),
+                    mock.patch("sys.stdout", fake_stdout),
+                    mock.patch("codex_manager.textual_ui.run_textual_dashboard") as run_dashboard,
+                ):
+                    result = cmd_add(SimpleNamespace(name=None, auth_json=None, force=False))
+
+                self.assertEqual(0, result)
+                run_dashboard.assert_called_once()
+                self.assertEqual("accounts", run_dashboard.call_args.kwargs["initial_tab"])
+
     def test_adding_live_codex_auth_updates_active_when_external_login_changed_account(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             with mock.patch.dict(

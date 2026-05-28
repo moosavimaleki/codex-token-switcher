@@ -5,6 +5,7 @@ import os
 import select
 import shutil
 import subprocess
+import contextlib
 import threading
 import time
 import uuid
@@ -219,6 +220,20 @@ class CodexAppServer:
             timeout=60,
         )
 
+    def start_chatgpt_device_login(self) -> dict[str, Any]:
+        return self.request(
+            "account/login/start",
+            {"type": "chatgptDeviceCode"},
+            timeout=30,
+        )
+
+    def cancel_login(self, login_id: str) -> dict[str, Any]:
+        return self.request(
+            "account/login/cancel",
+            {"loginId": login_id},
+            timeout=10,
+        )
+
     def executable_label(self) -> str:
         if self.codex_version:
             return f"{self.codex_bin} ({self.codex_version})"
@@ -263,6 +278,53 @@ class CodexAppServer:
                     message = error.get("message") or error or "unknown failure"
                     raise ManagerError(f"compaction failed: {message}")
 
+    def wait_for_login_completion(self, login_id: str, timeout: float) -> dict[str, Any]:
+        return self.wait_for_login_completion_with_progress(login_id, timeout=timeout)
+
+    def wait_for_login_completion_with_progress(
+        self,
+        login_id: str,
+        *,
+        timeout: float,
+        poll_interval: float = 2.0,
+        on_poll: Callable[[int, float], None] | None = None,
+        cancel_requested: Callable[[], bool] | None = None,
+    ) -> dict[str, Any]:
+        deadline = time.monotonic() + timeout
+        attempts = 0
+        started = time.monotonic()
+        while True:
+            if cancel_requested and cancel_requested():
+                with contextlib.suppress(Exception):
+                    self.cancel_login(login_id)
+                raise ManagerError("ChatGPT login cancelled.")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                with contextlib.suppress(Exception):
+                    self.cancel_login(login_id)
+                raise ManagerError(f"timed out waiting for ChatGPT login after {int(timeout)}s")
+            wait_timeout = min(max(0.1, poll_interval), remaining)
+            try:
+                msg = self.next_notification(timeout=wait_timeout)
+            except ManagerError as exc:
+                if "timed out waiting for app-server notification" in str(exc):
+                    attempts += 1
+                    if on_poll is not None:
+                        on_poll(attempts, time.monotonic() - started)
+                    continue
+                raise
+            method = msg.get("method")
+            params = msg.get("params") if isinstance(msg.get("params"), dict) else {}
+            if method == "error":
+                message = params.get("message") or params.get("error") or params
+                raise ManagerError(f"app-server error during login: {message}")
+            if method != "account/login/completed" or params.get("loginId") != login_id:
+                continue
+            if params.get("success") is True:
+                return params
+            error = params.get("error") or "unknown login failure"
+            raise ManagerError(f"ChatGPT login failed: {error}")
+
     def request(self, method: str, params: dict[str, Any], timeout: float) -> dict[str, Any]:
         request_id = str(uuid.uuid4())
         self._write({"id": request_id, "method": method, "params": params})
@@ -301,7 +363,12 @@ class CodexAppServer:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise ManagerError("timed out waiting for app-server notification")
-            msg = self._read(timeout=remaining)
+            try:
+                msg = self._read(timeout=remaining)
+            except ManagerError as exc:
+                if str(exc) == "timed out reading from app-server":
+                    raise ManagerError("timed out waiting for app-server notification") from exc
+                raise
             if self._handle_server_request(msg):
                 continue
             if "method" in msg and "id" not in msg:

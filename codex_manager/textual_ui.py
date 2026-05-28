@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 import os
+import threading
 from dataclasses import dataclass
 
+from .config import ensure_config
 from .errors import ManagerError
 from .history import available_history_accounts, build_history_window
-from .paths import Paths, list_accounts
-from .storage import load_state
+from .paths import Paths, list_accounts, status_path
+from .recommendation import account_recommendations
+from .storage import load_state, read_json
+from .system import copy_text_to_clipboard
+from .time_utils import human_delta, parse_datetime, utcnow
 from .views import describe_account
 
 
@@ -19,16 +24,49 @@ class ChartDefaults:
     timezone: str | None = None
 
 
+def tracked_data_signature(paths: Paths) -> tuple[tuple[str, int, int], ...]:
+    tracked_paths = [
+        paths.state_file,
+        paths.history_file,
+        *sorted(paths.accounts_dir.glob("*.json")),
+        *sorted(paths.status_dir.glob("*.json")),
+    ]
+    signature: list[tuple[str, int, int]] = []
+    for path in tracked_paths:
+        try:
+            stat = path.stat()
+        except FileNotFoundError:
+            continue
+        signature.append((str(path), stat.st_mtime_ns, stat.st_size))
+    return tuple(signature)
+
+
+def latest_account_refresh(paths: Paths) -> str | None:
+    latest = None
+    for name in list_accounts(paths):
+        try:
+            checked_at = parse_datetime(read_json(status_path(paths, name)).get("last_checked_at"))
+        except ManagerError:
+            checked_at = None
+        if checked_at is not None and (latest is None or checked_at > latest):
+            latest = checked_at
+    if latest is None:
+        return None
+    return latest.isoformat()
+
+
 def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart: ChartDefaults | None = None) -> None:
     os.environ.pop("NO_COLOR", None)
     os.environ.setdefault("FORCE_COLOR", "1")
     os.environ.setdefault("COLORTERM", "truecolor")
     try:
         from rich.text import Text
+        from textual import work
         from textual.app import App, ComposeResult
         from textual.containers import Horizontal, Vertical
         from textual.screen import ModalScreen
-        from textual.widgets import Button, Footer, Header, Input, Select, Static, TabbedContent, TabPane
+        from textual.worker import Worker, WorkerState
+        from textual.widgets import Button, DataTable, Footer, Header, Input, Select, Static, TabbedContent, TabPane
         from textual_plotext import PlotextPlot
     except ImportError as exc:
         raise ManagerError(
@@ -36,6 +74,8 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
         ) from exc
 
     from .commands.accounts import activate, add_account, delete_account
+    from .commands.maintenance import run_account_checks
+    from .codex.device_login import DeviceLoginCode, login_with_device_code
 
     class DeleteConfirmModal(ModalScreen[str | None]):
         BINDINGS = [("escape", "cancel", "Cancel")]
@@ -67,6 +107,17 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
             self.dismiss(None)
 
     class ManagerApp(App[None]):
+        _selected_account_name: str | None = None
+        _account_names: list[str] = []
+        _recommendations = {}
+        _device_login_code: DeviceLoginCode | None = None
+        _check_worker = None
+        _check_requested_after_current = False
+        _device_login_worker_ref = None
+        _device_login_cancel_event: threading.Event | None = None
+        _add_method = "device"
+        _last_data_signature: tuple[tuple[str, int, int], ...] = ()
+
         CSS = """
         Screen {
             layout: vertical;
@@ -105,6 +156,14 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
             height: auto;
             margin-top: 1;
         }
+        .hidden {
+            display: none;
+        }
+        #accounts-header {
+            height: auto;
+            align-vertical: middle;
+            margin-bottom: 1;
+        }
         #accounts-layout, #chart-layout {
             height: 1fr;
         }
@@ -115,12 +174,69 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
             width: 3fr;
             margin-right: 0;
         }
-        #chart-controls, #add-form {
+        #account-maintenance-panel {
+            height: auto;
+            padding: 0 1;
+        }
+        #account-maintenance-row {
+            height: auto;
+            align-vertical: middle;
+            margin: 0;
+        }
+        #accounts-list-panel {
+            height: 1fr;
+            margin-bottom: 0;
+        }
+        #account-maintenance-status {
+            color: #f8f8f2;
+            width: 1fr;
+            height: auto;
+            margin: 0;
+        }
+        #check-all {
+            min-width: 14;
+            width: 14;
+            margin-right: 0;
+        }
+        #chart-controls {
             width: 38;
+        }
+        #add-method-panel {
+            height: auto;
+            padding: 0 1;
+            margin-right: 0;
+        }
+        #add-method-switch {
+            height: auto;
+            margin: 0;
+        }
+        .method-tab {
+            min-width: 16;
+            margin-right: 1;
+        }
+        .field-label {
+            color: #f8f8f2;
+            margin-bottom: 1;
+        }
+        #add-device-panel, #add-manual-panel {
+            margin-top: 0;
+        }
+        #add-device-copy-row {
+            height: auto;
+            align-vertical: middle;
+            margin-top: 1;
+        }
+        #device-status-panel {
+            margin-top: 1;
         }
         #chart-panel {
             width: 1fr;
             margin-right: 0;
+        }
+        .section-label {
+            color: #ffb86c;
+            text-style: bold;
+            margin-bottom: 1;
         }
         Input, Select {
             margin-bottom: 1;
@@ -134,15 +250,35 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
             background: #282a36;
             color: #f8f8f2;
         }
-        #account-detail, #chart-status, #add-status {
+        #account-detail, #chart-status, #device-status, #manual-status, #add-help {
             height: 1fr;
         }
-        #account-table, #chart-status, #add-status {
+        #account-table, #chart-status, #device-status, #manual-status, #add-help, #device-login-link, #device-login-code {
             color: #bd93f9;
+        }
+        #account-table {
+            height: 1fr;
+        }
+        #device-login-code-row {
+            height: auto;
+            align-vertical: middle;
+            margin-bottom: 1;
+        }
+        #device-login-code {
+            width: 1fr;
+            padding: 0 1;
+            background: #282a36;
+            border: tall #6272a4;
+            color: #f8f8f2;
         }
         Button {
             margin-right: 1;
             min-width: 14;
+        }
+        #copy-device-code {
+            min-width: 8;
+            width: 8;
+            margin-right: 0;
         }
         #chart-plot {
             height: 1fr;
@@ -194,28 +330,65 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
             with TabbedContent(initial=initial_tab):
                 with TabPane("Accounts", id="accounts"):
                     with Horizontal(id="accounts-layout"):
-                        with Vertical(id="accounts-left", classes="panel"):
-                            yield Static("Account Browser", classes="title")
-                            yield Select([], prompt="Choose an account", allow_blank=True, id="account-select")
-                            yield Static("", id="account-table")
-                            with Horizontal(classes="button-row"):
-                                yield Button("Activate", id="activate")
-                                yield Button("Delete...", id="delete", variant="error")
-                            with Horizontal(classes="button-row"):
-                                yield Button("Add Account", id="open-add", variant="success")
-                                yield Button("Open Chart", id="open-chart", variant="primary")
+                        with Vertical(id="accounts-left"):
+                            with Vertical(id="account-maintenance-panel", classes="panel"):
+                                with Horizontal(id="account-maintenance-row"):
+                                    yield Static("", id="account-maintenance-status")
+                                    yield Button("↻ Check All", id="check-all", variant="primary", compact=True)
+                            with Vertical(id="accounts-list-panel", classes="panel"):
+                                yield Static("Account Browser", classes="title")
+                                yield DataTable(
+                                    show_row_labels=False,
+                                    cursor_type="row",
+                                    zebra_stripes=True,
+                                    id="account-table",
+                                )
+                                yield Static("Selected Account Actions", classes="section-label")
+                                with Horizontal(classes="button-row"):
+                                    yield Button("Activate", id="activate", variant="success", disabled=True)
+                                    yield Button("Open Chart", id="open-chart", disabled=True)
+                                    yield Button("Delete...", id="delete", variant="error", disabled=True)
                         with Vertical(id="accounts-right", classes="panel"):
                             yield Static("Selected Account", classes="title")
                             yield Static("", expand=True, id="account-detail")
                 with TabPane("Add", id="add"):
-                    with Vertical(id="add-form", classes="panel"):
-                        yield Static("Import A Healthy auth.json", classes="title")
-                        yield Input(placeholder="Account name", id="add-name")
-                        yield Input(placeholder="/path/to/auth.json", id="add-auth-path")
-                        with Horizontal(classes="button-row"):
-                            yield Button("Import Account", id="submit-add", variant="success")
-                            yield Button("Back To Accounts", id="back-accounts")
-                        yield Static("", id="add-status")
+                    with Vertical():
+                        with Vertical(id="add-method-panel", classes="panel"):
+                            with Horizontal(id="add-method-switch"):
+                                yield Button("Device Login", id="add-method-device", classes="method-tab", variant="primary")
+                                yield Button("Manual Import", id="add-method-manual", classes="method-tab")
+                        with Vertical(id="add-device-panel", classes="panel"):
+                            yield Static("Device Login", classes="title")
+                            yield Static(
+                                "Use ChatGPT device login to create a fresh token from inside codex-manager.",
+                                classes="field-label",
+                            )
+                            with Vertical(id="device-form-step"):
+                                yield Static("Account Name", classes="field-label")
+                                yield Input(placeholder="device-login account name", id="add-name")
+                                with Horizontal(classes="button-row"):
+                                    yield Button("Start Device Login", id="start-device-login", variant="primary")
+                            with Vertical(id="device-status-panel", classes="hidden"):
+                                yield Static("Login Status", classes="section-label")
+                                yield Static(
+                                    "Open the ChatGPT verification URL, submit the code, and keep this screen open.",
+                                    id="add-help",
+                                )
+                                yield Static("Verification URL will appear here.", id="device-login-link")
+                                with Horizontal(id="add-device-copy-row"):
+                                    yield Static("Code: not requested yet", id="device-login-code")
+                                    yield Button("Copy", id="copy-device-code", disabled=True)
+                                    yield Button("Cancel", id="cancel-device-login", variant="error")
+                                yield Static("", id="device-status")
+                        with Vertical(id="add-manual-panel", classes="panel hidden"):
+                            yield Static("Manual Import", classes="title")
+                            yield Static("Account Name", classes="field-label")
+                            yield Input(placeholder="manual account name", id="add-manual-name")
+                            yield Static("auth.json Path", classes="field-label")
+                            yield Input(placeholder="/path/to/auth.json for manual import", id="add-auth-path")
+                            with Horizontal(classes="button-row"):
+                                yield Button("Import File", id="submit-add", variant="success")
+                            yield Static("", id="manual-status")
                 with TabPane("Charts", id="charts"):
                     with Horizontal(id="chart-layout"):
                         with Vertical(id="chart-controls", classes="panel"):
@@ -256,46 +429,61 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
             yield Footer()
 
         def on_mount(self) -> None:
-            self._refresh_accounts()
-            self._refresh_chart_accounts()
+            account_table = self.query_one("#account-table", DataTable)
+            account_table.add_columns("Pick", "On", "Account", "Email", "State", "Weekly", "5h")
+            self._refresh_dashboard_data(update_banner=True)
             self._apply_chart_defaults()
+            self._set_add_method("device", focus_input=False)
+            self._focus_account_table()
+            self.set_interval(1.5, self._poll_for_data_changes)
 
         def action_refresh_data(self) -> None:
-            self._refresh_accounts()
-            self._refresh_chart_accounts()
-            self._render_chart_if_possible()
+            self._refresh_dashboard_data()
             self._set_banner("Reloaded account state and cached history.")
 
         def action_switch_accounts(self) -> None:
-            self.query_one(TabbedContent).active = "accounts"
+            self._switch_tab("accounts")
 
         def action_switch_add(self) -> None:
-            self.query_one(TabbedContent).active = "add"
+            self._switch_tab("add")
 
         def action_switch_chart(self) -> None:
-            self.query_one(TabbedContent).active = "charts"
-            self._render_chart_if_possible()
+            self._switch_tab("charts", after=self._render_chart_if_possible)
 
         def on_select_changed(self, event: Select.Changed) -> None:
-            if event.select.id == "account-select":
-                self._update_account_detail(event.value)
-            elif event.select.id == "chart-account":
+            if event.select.id == "chart-account":
                 self._render_chart_if_possible()
 
-        def on_button_pressed(self, event: Button.Pressed) -> None:
+        def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
+            if event.data_table.id == "account-table":
+                self._set_selected_account(str(event.row_key.value))
+
+        def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+            if event.data_table.id == "account-table":
+                self._set_selected_account(str(event.row_key.value))
+
+        async def on_button_pressed(self, event: Button.Pressed) -> None:
             button_id = event.button.id
             if button_id == "activate":
                 self._activate_selected_account()
+            elif button_id == "check-all":
+                self._run_check_all()
             elif button_id == "delete":
                 self._delete_selected_account()
-            elif button_id == "open-add":
-                self.action_switch_add()
             elif button_id == "open-chart":
                 self._push_selected_account_to_chart()
+            elif button_id == "start-device-login":
+                self._start_device_login()
+            elif button_id == "cancel-device-login":
+                self._cancel_device_login()
+            elif button_id == "add-method-device":
+                self._set_add_method("device")
+            elif button_id == "add-method-manual":
+                self._set_add_method("manual")
+            elif button_id == "copy-device-code":
+                self._copy_device_code()
             elif button_id == "submit-add":
                 self._submit_add()
-            elif button_id == "back-accounts":
-                self.action_switch_accounts()
             elif button_id == "render-chart":
                 self._render_chart()
             elif button_id == "chart-from-account":
@@ -304,32 +492,143 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
                 self._activate_chart_account()
 
         def _selected_account(self) -> str | None:
-            value = self.query_one("#account-select", Select).value
-            return value if isinstance(value, str) else None
+            return self._selected_account_name
 
         def _selected_chart_account(self) -> str | None:
             value = self.query_one("#chart-account", Select).value
             return value if isinstance(value, str) else None
 
-        def _refresh_accounts(self) -> None:
+        def _active_tab(self) -> str | None:
+            active = self.query_one(TabbedContent).active
+            return active if isinstance(active, str) else None
+
+        def _focus_tab_content(self, tab_id: str) -> None:
+            if tab_id == "accounts":
+                self._focus_account_table()
+            elif tab_id == "charts":
+                self.query_one("#chart-account", Select).focus()
+            elif tab_id == "add":
+                if self._add_method == "manual":
+                    self.query_one("#add-manual-name", Input).focus()
+                else:
+                    self.query_one("#add-name", Input).focus()
+
+        def _switch_tab(self, tab_id: str, after=None) -> None:
+            def callback() -> None:
+                self.query_one(TabbedContent).active = tab_id
+                self._focus_tab_content(tab_id)
+                if after is not None:
+                    after()
+
+            self.call_after_refresh(callback)
+
+        def _set_add_method(self, method: str, *, focus_input: bool = True) -> None:
+            self._add_method = method
+            device_panel = self.query_one("#add-device-panel", Vertical)
+            manual_panel = self.query_one("#add-manual-panel", Vertical)
+            device_button = self.query_one("#add-method-device", Button)
+            manual_button = self.query_one("#add-method-manual", Button)
+            if method == "manual":
+                if self._device_login_worker_ref is not None:
+                    self._cancel_device_login()
+                device_panel.add_class("hidden")
+                manual_panel.remove_class("hidden")
+                device_button.variant = "default"
+                manual_button.variant = "primary"
+                if focus_input:
+                    self.query_one("#add-manual-name", Input).focus()
+            else:
+                manual_panel.add_class("hidden")
+                device_panel.remove_class("hidden")
+                manual_button.variant = "default"
+                device_button.variant = "primary"
+                self._reset_device_login_view()
+                if focus_input:
+                    self.query_one("#add-name", Input).focus()
+
+        def _reset_device_login_view(self) -> None:
+            self._device_login_code = None
+            self.query_one("#device-form-step", Vertical).remove_class("hidden")
+            self.query_one("#device-status-panel", Vertical).add_class("hidden")
+            self.query_one("#device-login-link", Static).update("Verification URL will appear here.")
+            self.query_one("#device-login-code", Static).update("Code: not requested yet")
+            self.query_one("#device-status", Static).update("")
+            self.query_one("#copy-device-code", Button).disabled = True
+            self.query_one("#cancel-device-login", Button).disabled = False
+            button = self.query_one("#start-device-login", Button)
+            button.disabled = False
+            button.label = "Start Device Login"
+
+        def _refresh_dashboard_data(
+            self,
+            *,
+            preserve_selected: bool = True,
+            rerender_chart: bool = True,
+            update_banner: bool = False,
+        ) -> None:
+            active_tab_before = self._active_tab()
+            selected_before = self._selected_account() if preserve_selected else None
+            self._refresh_accounts(
+                update_banner=update_banner,
+                sync_table_cursor=active_tab_before == "accounts",
+            )
+            self._refresh_chart_accounts()
+            if selected_before and selected_before in self._account_names:
+                if active_tab_before == "accounts":
+                    self._select_account_row(selected_before)
+                else:
+                    self._set_selected_account(selected_before)
+            if active_tab_before and self._active_tab() != active_tab_before:
+                self.query_one(TabbedContent).active = active_tab_before
+                self._focus_tab_content(active_tab_before)
+            if rerender_chart:
+                self._render_chart_if_possible()
+            self._last_data_signature = tracked_data_signature(paths)
+
+        def _poll_for_data_changes(self) -> None:
+            current_signature = tracked_data_signature(paths)
+            if current_signature != self._last_data_signature:
+                self._refresh_dashboard_data()
+
+        def _schedule_background_check(self, *, banner_message: str) -> None:
+            if self._check_worker is not None:
+                self._check_requested_after_current = True
+                self._set_banner(banner_message)
+                return
+            self._set_banner(banner_message)
+            self._run_check_all()
+
+        def _refresh_accounts(self, *, update_banner: bool = True, sync_table_cursor: bool = True) -> None:
             active = load_state(paths).get("active")
             names = list_accounts(paths)
-            select = self.query_one("#account-select", Select)
-            options = [(self._account_option_label(name, active), name) for name in names]
-            select.set_options(options)
-            if names:
+            self._recommendations = account_recommendations(paths, names)
+            self._account_names = self._ordered_account_names(names)
+            if self._account_names:
                 current = self._selected_account()
-                target = current if current in names else active if active in names else names[0]
-                select.value = target
-                self._update_account_table(active)
-                self._update_account_detail(target)
-                self._set_banner(
-                    f"Primary account: {active}" if active else "No primary account selected yet."
+                target = (
+                    current
+                    if current in self._account_names
+                    else active
+                    if active in self._account_names
+                    else self._account_names[0]
                 )
+                self._update_account_table(active)
+                if sync_table_cursor:
+                    self._select_account_row(target)
+                else:
+                    self._set_selected_account(target)
+                if update_banner:
+                    self._set_banner(
+                        f"Primary account: {active}" if active else "No primary account selected yet."
+                    )
             else:
-                self.query_one("#account-table", Static).update("No accounts tracked yet.")
+                self.query_one("#account-table", DataTable).clear(columns=False)
+                self._selected_account_name = None
+                self._recommendations = {}
+                self._update_account_action_state()
                 self.query_one("#account-detail", Static).update("Import an auth.json to get started.")
-                self._set_banner("No primary account selected yet.")
+                if update_banner:
+                    self._set_banner("No primary account selected yet.")
 
         def _refresh_chart_accounts(self) -> None:
             active = load_state(paths).get("active")
@@ -340,24 +639,100 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
                 select.value = active if active in names else names[0]
 
         def _update_account_table(self, active: str | None) -> None:
-            rows = [describe_account(paths, name, active) for name in list_accounts(paths)]
+            table = self.query_one("#account-table", DataTable)
+            table.clear(columns=False)
+            rows = [describe_account(paths, name, active) for name in self._account_names]
             if not rows:
-                self.query_one("#account-table", Static).update("No accounts tracked yet.")
                 return
-            lines = [
-                "On  Account       State    Limits",
-                "──  ────────────  ───────  ─────────────────────",
-            ]
             for row in rows:
                 marker = "●" if row["name"] == active else "○"
-                limits = row["limits"].replace("; ", " | ")
-                lines.append(
-                    f"{marker:<2}  {row['name'][:12]:<12}  {row['state'][:7]:<7}  {limits}"
+                recommendation = self._recommendations.get(row["name"])
+                label = recommendation.label if recommendation else ""
+                table.add_row(
+                    label,
+                    marker,
+                    row["name"],
+                    row["email"],
+                    row["state"],
+                    self._limit_bar(recommendation.weekly_remaining if recommendation else None, "magenta"),
+                    self._limit_bar(recommendation.primary_remaining if recommendation else None, "cyan"),
+                    key=row["name"],
                 )
-            self.query_one("#account-table", Static).update("\n".join(lines))
+
+        def _ordered_account_names(self, names: list[str]) -> list[str]:
+            return sorted(
+                names,
+                key=lambda name: (
+                    self._recommendations.get(name).score if self._recommendations.get(name) else float("-inf"),
+                    name,
+                ),
+                reverse=True,
+            )
+
+        def _limit_bar(self, percent: float | None, color: str) -> Text:
+            if percent is None:
+                return Text("unknown", style="dim")
+            clamped = max(0.0, min(100.0, float(percent)))
+            filled = round(clamped / 10)
+            empty = 10 - filled
+            text = Text()
+            text.append("█" * filled, style=f"bold {color}")
+            text.append("░" * empty, style="dim")
+            text.append(f" {clamped:>5.1f}%", style=f"bold {color}")
+            return text
 
         def _account_option_label(self, name: str, active: str | None) -> str:
             return f"● {name}  [primary]" if name == active else f"○ {name}"
+
+        def _focus_account_table(self) -> None:
+            self.query_one("#account-table", DataTable).focus()
+
+        def _update_account_maintenance_status(self) -> None:
+            interval = str(ensure_config(paths).get("monitor_interval"))
+            latest_refresh_raw = latest_account_refresh(paths)
+            if self._check_worker is not None:
+                status_text = f"Last refresh: checking now | monitor {interval}"
+            elif latest_refresh_raw:
+                refreshed_at = parse_datetime(latest_refresh_raw)
+                if refreshed_at is not None:
+                    status_text = (
+                        f"Last refresh: {human_delta(utcnow() - refreshed_at)} ago"
+                        f" | {refreshed_at.astimezone().strftime('%Y-%m-%d %H:%M:%S %Z')}"
+                        f" | monitor {interval}"
+                    )
+                else:
+                    status_text = f"Last refresh: {latest_refresh_raw} | monitor {interval}"
+            else:
+                status_text = f"Last refresh: not available yet | monitor {interval}"
+
+            self.query_one("#account-maintenance-status", Static).update(status_text)
+
+        def _update_account_action_state(self) -> None:
+            has_accounts = bool(self._account_names)
+            has_selection = isinstance(self._selected_account_name, str) and self._selected_account_name in self._account_names
+            self.query_one("#check-all", Button).disabled = (not has_accounts) or (self._check_worker is not None)
+            self.query_one("#activate", Button).disabled = not has_selection
+            self.query_one("#open-chart", Button).disabled = not has_selection
+            self.query_one("#delete", Button).disabled = not has_selection
+            self._update_account_maintenance_status()
+
+        def _set_selected_account(self, name: str | None) -> None:
+            self._selected_account_name = name
+            self._update_account_action_state()
+            self._update_account_detail(name)
+
+        def _select_account_row(self, name: str | None) -> None:
+            if not name:
+                self._set_selected_account(None)
+                return
+            table = self.query_one("#account-table", DataTable)
+            try:
+                row_index = self._account_names.index(name)
+            except ValueError:
+                self._set_selected_account(None)
+                return
+            table.move_cursor(row=row_index, column=0, animate=False, scroll=True)
+            self._set_selected_account(name)
 
         def _update_account_detail(self, name: object) -> None:
             if not isinstance(name, str):
@@ -366,6 +741,7 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
             active = load_state(paths).get("active")
             row = describe_account(paths, name, active)
             primary_line = "Primary Account: yes" if row["name"] == active else "Primary Account: no"
+            recommendation = self._recommendations.get(name)
             detail = [
                 f"Account: {row['name']}",
                 primary_line,
@@ -377,6 +753,14 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
                 "",
                 row["reason"],
             ]
+            if recommendation:
+                detail.extend(
+                    [
+                        "",
+                        f"Recommendation: {recommendation.label}",
+                        recommendation.reason,
+                    ]
+                )
             self.query_one("#account-detail", Static).update("\n".join(detail))
 
         def _activate_selected_account(self) -> None:
@@ -385,8 +769,7 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
                 self._set_banner("Select an account first.")
                 return
             activate(paths, name)
-            self._refresh_accounts()
-            self._refresh_chart_accounts()
+            self._refresh_dashboard_data(rerender_chart=False)
             self._set_banner(f"Primary account switched to {name}. Restart Codex if you need the new auth picked up immediately.")
 
         def _activate_chart_account(self) -> None:
@@ -395,11 +778,172 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
                 self._set_banner("Select a chart account first.")
                 return
             activate(paths, name)
-            self._refresh_accounts()
-            self._refresh_chart_accounts()
+            self._refresh_dashboard_data(rerender_chart=False)
             self.query_one("#chart-account", Select).value = name
             self._set_banner(f"Primary account switched to {name} from Charts.")
             self._render_chart_if_possible()
+
+        @work(thread=True, exclusive=True, exit_on_error=False)
+        def _check_accounts_worker(self) -> dict:
+            return run_account_checks(paths, include_active=False, force_refresh=False)
+
+        @work(thread=True, exclusive=True, exit_on_error=False)
+        def _device_login_worker(self, name: str):
+            return login_with_device_code(
+                paths,
+                name,
+                on_code=lambda code: self.call_from_thread(self._show_device_login_code, code),
+                on_poll=lambda attempts, elapsed: self.call_from_thread(
+                    self._show_device_login_poll, attempts, elapsed
+                ),
+                cancel_event=self._device_login_cancel_event,
+            )
+
+        def _run_check_all(self) -> None:
+            button = self.query_one("#check-all", Button)
+            if self._check_worker is not None:
+                self._set_banner("Account check is already running.")
+                return
+            button.disabled = True
+            button.label = "Checking..."
+            self._set_banner("Running codex-manager check and fetching latest limits from Codex...")
+            self._check_worker = self._check_accounts_worker()
+
+        def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
+            if event.state not in {WorkerState.ERROR, WorkerState.SUCCESS, WorkerState.CANCELLED}:
+                return
+            if event.worker is self._check_worker:
+                self._finish_check_worker(event)
+            elif event.worker is self._device_login_worker_ref:
+                self._finish_device_login_worker(event)
+
+        def _finish_check_worker(self, event: Worker.StateChanged) -> None:
+            button = self.query_one("#check-all", Button)
+            button.disabled = False
+            button.label = "↻ Check All"
+
+            if event.state == WorkerState.SUCCESS:
+                summary = event.worker.result
+                self._refresh_dashboard_data()
+                self._set_banner(
+                    f"Checked {len(summary['results'])} account(s); refreshed {summary['refreshed']}; failures {summary['failures']}."
+                )
+            elif event.state == WorkerState.ERROR:
+                error = event.worker.error
+                self._set_banner(str(error) if error else "Account check failed.")
+            else:
+                self._set_banner("Account check cancelled.")
+
+            self._check_worker = None
+            self._update_account_action_state()
+            if self._check_requested_after_current:
+                self._check_requested_after_current = False
+                self._run_check_all()
+                return
+            self._focus_account_table()
+
+        def _finish_device_login_worker(self, event: Worker.StateChanged) -> None:
+            if event.state == WorkerState.SUCCESS:
+                result = event.worker.result
+                self.query_one("#device-status", Static).update(
+                    f"Imported {result.name} for {result.email or 'unknown email'}."
+                )
+                self.query_one("#device-login-link", Static).update("Verification finished.")
+                self.query_one("#device-login-code", Static).update("Code: complete")
+                self.query_one("#copy-device-code", Button).disabled = True
+                self.query_one("#add-name", Input).value = ""
+                self.query_one("#add-manual-name", Input).value = ""
+                self.query_one("#add-auth-path", Input).value = ""
+                self._refresh_dashboard_data(rerender_chart=False)
+                self._select_account_row(result.name)
+                self._switch_tab("accounts")
+                self._schedule_background_check(
+                    banner_message=f"Imported account {result.name} from ChatGPT device login. Running background check..."
+                )
+            elif event.state == WorkerState.ERROR:
+                error = event.worker.error
+                message = str(error) if error else "Device login failed."
+                if "cancelled" in message.lower():
+                    self._reset_device_login_view()
+                    self._set_banner("Device login cancelled.")
+                else:
+                    button = self.query_one("#start-device-login", Button)
+                    button.disabled = False
+                    button.label = "Start Device Login"
+                    self.query_one("#cancel-device-login", Button).disabled = True
+                    self.query_one("#device-status-panel", Vertical).remove_class("hidden")
+                    self.query_one("#device-status", Static).update(message)
+                    self._set_banner("Device login failed.")
+            else:
+                self._reset_device_login_view()
+                self._set_banner("Device login cancelled.")
+
+            self._device_login_worker_ref = None
+            self._device_login_cancel_event = None
+
+        def _show_device_login_code(self, code: DeviceLoginCode) -> None:
+            self._device_login_code = code
+            self.query_one("#device-form-step", Vertical).add_class("hidden")
+            self.query_one("#device-status-panel", Vertical).remove_class("hidden")
+            self.query_one("#device-login-link", Static).update(code.verification_url)
+            self.query_one("#device-login-code", Static).update(f"Code: {code.user_code}")
+            self.query_one("#copy-device-code", Button).disabled = False
+            self.query_one("#device-status", Static).update(
+                "\n".join(
+                    [
+                        "Waiting for ChatGPT approval...",
+                        "",
+                        "Open the verification URL, submit the code, then leave this screen open.",
+                        "",
+                        "Waiting for Codex to receive tokens...",
+                    ]
+                )
+            )
+
+        def _show_device_login_poll(self, attempts: int, elapsed_seconds: float) -> None:
+            self.query_one("#device-status", Static).update(
+                f"Polling ChatGPT login... attempt {attempts}, elapsed {int(elapsed_seconds)}s"
+            )
+
+        def _copy_device_code(self) -> None:
+            if not self._device_login_code:
+                self._set_banner("No device code is available yet.")
+                return
+            copied_with_system_clipboard = copy_text_to_clipboard(self._device_login_code.user_code)
+            self.copy_to_clipboard(self._device_login_code.user_code)
+            if copied_with_system_clipboard:
+                self._set_banner("Device code copied to clipboard.")
+            else:
+                self._set_banner("Device code sent to terminal clipboard.")
+
+        def _cancel_device_login(self) -> None:
+            if self._device_login_cancel_event is None or self._device_login_worker_ref is None:
+                self._reset_device_login_view()
+                return
+            self._device_login_cancel_event.set()
+            self.query_one("#cancel-device-login", Button).disabled = True
+            self.query_one("#device-status", Static).update("Cancelling device login...")
+            self._set_banner("Cancelling device login...")
+
+        def _start_device_login(self) -> None:
+            name = self.query_one("#add-name", Input).value.strip()
+            if not name:
+                self.query_one("#device-status", Static).update("Account name is required.")
+                return
+            if self._device_login_worker_ref is not None:
+                self._set_banner("Device login is already running.")
+                return
+            self._device_login_code = None
+            self._device_login_cancel_event = threading.Event()
+            button = self.query_one("#start-device-login", Button)
+            button.disabled = True
+            button.label = "Waiting..."
+            self.query_one("#device-login-link", Static).update("Requesting verification URL...")
+            self.query_one("#device-login-code", Static).update("Code: pending...")
+            self.query_one("#copy-device-code", Button).disabled = True
+            self.query_one("#device-status", Static).update("Requesting a ChatGPT device code...")
+            self.query_one("#cancel-device-login", Button).disabled = False
+            self._device_login_worker_ref = self._device_login_worker(name)
 
         def _delete_selected_account(self) -> None:
             name = self._selected_account()
@@ -421,29 +965,31 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
             except ManagerError as exc:
                 self._set_banner(str(exc))
                 return
-            self._refresh_accounts()
-            self._refresh_chart_accounts()
+            self._refresh_dashboard_data(rerender_chart=False)
             self._set_banner(f"Deleted {name}.")
 
         def _submit_add(self) -> None:
-            name = self.query_one("#add-name", Input).value.strip()
+            name = self.query_one("#add-manual-name", Input).value.strip()
             auth_path = self.query_one("#add-auth-path", Input).value.strip()
             if not name or not auth_path:
-                self.query_one("#add-status", Static).update("Name and auth.json path are both required.")
+                self.query_one("#manual-status", Static).update("Name and auth.json path are both required.")
                 return
             try:
                 meta = add_account(paths, name, auth_path)
             except ManagerError as exc:
-                self.query_one("#add-status", Static).update(str(exc))
+                self.query_one("#manual-status", Static).update(str(exc))
                 return
-            self.query_one("#add-status", Static).update(
+            self.query_one("#manual-status", Static).update(
                 f"Imported {name} for {meta.get('email') or 'unknown email'}."
             )
-            self.query_one("#add-name", Input).value = ""
-            self._refresh_accounts()
-            self._refresh_chart_accounts()
-            self.action_switch_accounts()
-            self._set_banner(f"Imported account {name}.")
+            self.query_one("#add-manual-name", Input).value = ""
+            self.query_one("#add-auth-path", Input).value = ""
+            self._refresh_dashboard_data(rerender_chart=False)
+            self._select_account_row(name)
+            self._switch_tab("accounts")
+            self._schedule_background_check(
+                banner_message=f"Imported account {name}. Running background check..."
+            )
 
         def _push_selected_account_to_chart(self) -> None:
             name = self._selected_account()
@@ -452,8 +998,7 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
                 return
             chart_select = self.query_one("#chart-account", Select)
             chart_select.value = name
-            self.action_switch_chart()
-            self._render_chart_if_possible()
+            self._switch_tab("charts", after=self._render_chart_if_possible)
 
         def _apply_chart_defaults(self) -> None:
             if chart and chart.account:

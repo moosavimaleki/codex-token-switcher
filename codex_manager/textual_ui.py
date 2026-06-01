@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
 import threading
 from dataclasses import dataclass
+from pathlib import Path
 
+from .auth import account_metadata, read_auth
 from .config import ensure_config
 from .errors import ManagerError
 from .history import available_history_accounts, build_history_window
-from .paths import Paths, list_accounts, status_path
+from .paths import Paths, account_path, list_accounts, status_path
 from .recommendation import account_recommendations
 from .storage import load_state, read_json
 from .system import copy_text_to_clipboard
@@ -55,6 +59,30 @@ def latest_account_refresh(paths: Paths) -> str | None:
     return latest.isoformat()
 
 
+def run_check_command(paths: Paths) -> dict[str, object]:
+    env = os.environ.copy()
+    env["CODEX_HOME"] = str(paths.codex_home)
+    env["CODEX_MANAGER_HOME"] = str(paths.manager_home)
+    env["CODEX_AUTH_PATH"] = str(paths.codex_auth)
+    repo_root = str(Path(__file__).resolve().parent.parent)
+    env["PYTHONPATH"] = repo_root if not env.get("PYTHONPATH") else f"{repo_root}{os.pathsep}{env['PYTHONPATH']}"
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from codex_manager.cli import main; raise SystemExit(main(['check', '--quiet']))",
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    stderr = completed.stderr.strip()
+    if completed.returncode not in {0, 1} or stderr:
+        message = stderr or completed.stdout.strip() or f"codex-manager check exited {completed.returncode}"
+        raise ManagerError(message)
+    return {"returncode": completed.returncode}
+
+
 def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart: ChartDefaults | None = None) -> None:
     os.environ.pop("NO_COLOR", None)
     os.environ.setdefault("FORCE_COLOR", "1")
@@ -74,7 +102,6 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
         ) from exc
 
     from .commands.accounts import activate, add_account, delete_account
-    from .commands.maintenance import run_account_checks
     from .codex.device_login import DeviceLoginCode, login_with_device_code
 
     class DeleteConfirmModal(ModalScreen[str | None]):
@@ -346,6 +373,7 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
                                 yield Static("Selected Account Actions", classes="section-label")
                                 with Horizontal(classes="button-row"):
                                     yield Button("Activate", id="activate", variant="success", disabled=True)
+                                    yield Button("Relogin", id="relogin", variant="warning", disabled=True, classes="hidden")
                                     yield Button("Open Chart", id="open-chart", disabled=True)
                                     yield Button("Delete...", id="delete", variant="error", disabled=True)
                         with Vertical(id="accounts-right", classes="panel"):
@@ -455,12 +483,13 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
                 self._render_chart_if_possible()
 
         def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
-            if event.data_table.id == "account-table":
+            if event.data_table.id == "account-table" and self._active_tab() == "accounts":
                 self._set_selected_account(str(event.row_key.value))
 
         def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
-            if event.data_table.id == "account-table":
+            if event.data_table.id == "account-table" and self._active_tab() == "accounts":
                 self._set_selected_account(str(event.row_key.value))
+                self._activate_selected_account()
 
         async def on_button_pressed(self, event: Button.Pressed) -> None:
             button_id = event.button.id
@@ -468,6 +497,8 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
                 self._activate_selected_account()
             elif button_id == "check-all":
                 self._run_check_all()
+            elif button_id == "relogin":
+                self._start_relogin_selected_account()
             elif button_id == "delete":
                 self._delete_selected_account()
             elif button_id == "open-chart":
@@ -508,7 +539,9 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
             elif tab_id == "charts":
                 self.query_one("#chart-account", Select).focus()
             elif tab_id == "add":
-                if self._add_method == "manual":
+                if self._device_login_worker_ref is not None or not self.query_one("#device-status-panel", Vertical).has_class("hidden"):
+                    self.query_one("#cancel-device-login", Button).focus()
+                elif self._add_method == "manual":
                     self.query_one("#add-manual-name", Input).focus()
                 else:
                     self.query_one("#add-name", Input).focus()
@@ -516,9 +549,9 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
         def _switch_tab(self, tab_id: str, after=None) -> None:
             def callback() -> None:
                 self.query_one(TabbedContent).active = tab_id
-                self._focus_tab_content(tab_id)
                 if after is not None:
                     after()
+                self._focus_tab_content(tab_id)
 
             self.call_after_refresh(callback)
 
@@ -558,6 +591,7 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
             button = self.query_one("#start-device-login", Button)
             button.disabled = False
             button.label = "Start Device Login"
+            self.query_one("#add-name", Input).disabled = False
 
         def _refresh_dashboard_data(
             self,
@@ -586,6 +620,8 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
             self._last_data_signature = tracked_data_signature(paths)
 
         def _poll_for_data_changes(self) -> None:
+            if self._check_worker is not None:
+                return
             current_signature = tracked_data_signature(paths)
             if current_signature != self._last_data_signature:
                 self._refresh_dashboard_data()
@@ -685,7 +721,8 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
             return f"● {name}  [primary]" if name == active else f"○ {name}"
 
         def _focus_account_table(self) -> None:
-            self.query_one("#account-table", DataTable).focus()
+            if self._active_tab() == "accounts":
+                self.query_one("#account-table", DataTable).focus()
 
         def _update_account_maintenance_status(self) -> None:
             interval = str(ensure_config(paths).get("monitor_interval"))
@@ -710,11 +747,26 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
         def _update_account_action_state(self) -> None:
             has_accounts = bool(self._account_names)
             has_selection = isinstance(self._selected_account_name, str) and self._selected_account_name in self._account_names
+            selected_state = self._selected_account_state() if has_selection else None
             self.query_one("#check-all", Button).disabled = (not has_accounts) or (self._check_worker is not None)
-            self.query_one("#activate", Button).disabled = not has_selection
+            self.query_one("#activate", Button).disabled = not has_selection or selected_state == "needs_login"
+            can_relogin = has_selection and selected_state == "needs_login"
+            relogin_button = self.query_one("#relogin", Button)
+            relogin_button.disabled = not can_relogin
+            if can_relogin:
+                relogin_button.remove_class("hidden")
+            else:
+                relogin_button.add_class("hidden")
             self.query_one("#open-chart", Button).disabled = not has_selection
             self.query_one("#delete", Button).disabled = not has_selection
             self._update_account_maintenance_status()
+
+        def _selected_account_state(self) -> str | None:
+            name = self._selected_account()
+            if not name:
+                return None
+            active = load_state(paths).get("active")
+            return describe_account(paths, name, active).get("state")
 
         def _set_selected_account(self, name: str | None) -> None:
             self._selected_account_name = name
@@ -768,6 +820,9 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
             if not name:
                 self._set_banner("Select an account first.")
                 return
+            if self._selected_account_state() == "needs_login":
+                self._set_banner(f"{name} needs relogin before activation.")
+                return
             activate(paths, name)
             self._refresh_dashboard_data(rerender_chart=False)
             self._set_banner(f"Primary account switched to {name}. Restart Codex if you need the new auth picked up immediately.")
@@ -785,10 +840,10 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
 
         @work(thread=True, exclusive=True, exit_on_error=False)
         def _check_accounts_worker(self) -> dict:
-            return run_account_checks(paths, include_active=False, force_refresh=False)
+            return run_check_command(paths)
 
         @work(thread=True, exclusive=True, exit_on_error=False)
-        def _device_login_worker(self, name: str):
+        def _device_login_worker(self, name: str, replace_existing: bool = False, expected_email: str | None = None):
             return login_with_device_code(
                 paths,
                 name,
@@ -797,6 +852,8 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
                     self._show_device_login_poll, attempts, elapsed
                 ),
                 cancel_event=self._device_login_cancel_event,
+                replace_existing=replace_existing,
+                expected_email=expected_email,
             )
 
         def _run_check_all(self) -> None:
@@ -821,20 +878,21 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
             button = self.query_one("#check-all", Button)
             button.disabled = False
             button.label = "↻ Check All"
+            self._check_worker = None
 
             if event.state == WorkerState.SUCCESS:
                 summary = event.worker.result
                 self._refresh_dashboard_data()
-                self._set_banner(
-                    f"Checked {len(summary['results'])} account(s); refreshed {summary['refreshed']}; failures {summary['failures']}."
-                )
+                if summary.get("returncode") == 0:
+                    self._set_banner("Check finished; dashboard refreshed.")
+                else:
+                    self._set_banner("Check finished with accounts needing login; dashboard refreshed.")
             elif event.state == WorkerState.ERROR:
                 error = event.worker.error
                 self._set_banner(str(error) if error else "Account check failed.")
             else:
                 self._set_banner("Account check cancelled.")
 
-            self._check_worker = None
             self._update_account_action_state()
             if self._check_requested_after_current:
                 self._check_requested_after_current = False
@@ -845,12 +903,14 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
         def _finish_device_login_worker(self, event: Worker.StateChanged) -> None:
             if event.state == WorkerState.SUCCESS:
                 result = event.worker.result
+                action = "Replaced" if result.replaced else "Imported"
                 self.query_one("#device-status", Static).update(
-                    f"Imported {result.name} for {result.email or 'unknown email'}."
+                    f"{action} {result.name} for {result.email or 'unknown email'}."
                 )
                 self.query_one("#device-login-link", Static).update("Verification finished.")
                 self.query_one("#device-login-code", Static).update("Code: complete")
                 self.query_one("#copy-device-code", Button).disabled = True
+                self.query_one("#add-name", Input).disabled = False
                 self.query_one("#add-name", Input).value = ""
                 self.query_one("#add-manual-name", Input).value = ""
                 self.query_one("#add-auth-path", Input).value = ""
@@ -858,7 +918,7 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
                 self._select_account_row(result.name)
                 self._switch_tab("accounts")
                 self._schedule_background_check(
-                    banner_message=f"Imported account {result.name} from ChatGPT device login. Running background check..."
+                    banner_message=f"{action} account {result.name} from ChatGPT device login. Running background check..."
                 )
             elif event.state == WorkerState.ERROR:
                 error = event.worker.error
@@ -870,6 +930,8 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
                     button = self.query_one("#start-device-login", Button)
                     button.disabled = False
                     button.label = "Start Device Login"
+                    self.query_one("#add-name", Input).disabled = False
+                    self.query_one("#device-form-step", Vertical).remove_class("hidden")
                     self.query_one("#cancel-device-login", Button).disabled = True
                     self.query_one("#device-status-panel", Vertical).remove_class("hidden")
                     self.query_one("#device-status", Static).update(message)
@@ -878,6 +940,7 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
                 self._reset_device_login_view()
                 self._set_banner("Device login cancelled.")
 
+            self.query_one("#add-name", Input).disabled = False
             self._device_login_worker_ref = None
             self._device_login_cancel_event = None
 
@@ -930,20 +993,62 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
             if not name:
                 self.query_one("#device-status", Static).update("Account name is required.")
                 return
+            self._begin_device_login(name)
+
+        def _begin_device_login(
+            self,
+            name: str,
+            *,
+            replace_existing: bool = False,
+            expected_email: str | None = None,
+        ) -> None:
             if self._device_login_worker_ref is not None:
                 self._set_banner("Device login is already running.")
                 return
             self._device_login_code = None
             self._device_login_cancel_event = threading.Event()
+            self.query_one("#add-name", Input).value = name
+            self.query_one("#add-name", Input).disabled = replace_existing
+            self.query_one("#device-form-step", Vertical).add_class("hidden")
+            self.query_one("#device-status-panel", Vertical).remove_class("hidden")
             button = self.query_one("#start-device-login", Button)
             button.disabled = True
-            button.label = "Waiting..."
+            button.label = "Relogging..." if replace_existing else "Waiting..."
             self.query_one("#device-login-link", Static).update("Requesting verification URL...")
             self.query_one("#device-login-code", Static).update("Code: pending...")
             self.query_one("#copy-device-code", Button).disabled = True
             self.query_one("#device-status", Static).update("Requesting a ChatGPT device code...")
             self.query_one("#cancel-device-login", Button).disabled = False
-            self._device_login_worker_ref = self._device_login_worker(name)
+            self._device_login_worker_ref = self._device_login_worker(
+                name,
+                replace_existing,
+                expected_email,
+            )
+
+        def _start_relogin_selected_account(self) -> None:
+            name = self._selected_account()
+            if not name:
+                self._set_banner("Select an account first.")
+                return
+            if self._device_login_worker_ref is not None:
+                self._set_banner("Device login is already running.")
+                return
+            try:
+                expected_email = account_metadata(read_auth(account_path(paths, name))).get("email")
+            except ManagerError as exc:
+                self._set_banner(f"Cannot relogin {name}: {exc}")
+                return
+            if not expected_email:
+                self._set_banner(f"Cannot relogin {name}: stored account email is unknown.")
+                return
+
+            def start_relogin() -> None:
+                self._set_add_method("device", focus_input=False)
+                self.query_one("#add-name", Input).value = name
+                self._begin_device_login(name, replace_existing=True, expected_email=expected_email)
+
+            self._switch_tab("add", after=start_relogin)
+            self._set_banner(f"Starting relogin for {name}...")
 
         def _delete_selected_account(self) -> None:
             name = self._selected_account()

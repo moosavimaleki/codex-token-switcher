@@ -9,13 +9,17 @@ from codex_manager.codex.device_login import login_with_device_code
 from codex_manager.codex.app_server import CodexAppServer
 from codex_manager.errors import ManagerError
 from codex_manager.paths import Paths, account_path, ensure_dirs
-from codex_manager.storage import atomic_write_json, read_json
+from codex_manager.storage import atomic_write_json, read_json, save_state
 
 from test_accounts_sync import make_auth
 
 
 class FakeAppServer:
     started = 0
+    refresh_token = "new-refresh"
+    account_id = "acct-new"
+    email = "new@example.com"
+    subject = "user-new"
 
     def __init__(self, codex_home, **_kwargs) -> None:
         self.codex_home = codex_home
@@ -54,16 +58,23 @@ class FakeAppServer:
         atomic_write_json(
             self.codex_home / "auth.json",
             make_auth(
-                refresh_token="new-refresh",
-                account_id="acct-new",
-                email="new@example.com",
-                subject="user-new",
+                refresh_token=FakeAppServer.refresh_token,
+                account_id=FakeAppServer.account_id,
+                email=FakeAppServer.email,
+                subject=FakeAppServer.subject,
             ),
         )
         return {"loginId": login_id, "success": True, "error": None}
 
 
 class DeviceLoginTests(unittest.TestCase):
+    def setUp(self) -> None:
+        FakeAppServer.started = 0
+        FakeAppServer.refresh_token = "new-refresh"
+        FakeAppServer.account_id = "acct-new"
+        FakeAppServer.email = "new@example.com"
+        FakeAppServer.subject = "user-new"
+
     def test_device_login_imports_auth_without_touching_live_auth(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             with mock.patch.dict(
@@ -107,6 +118,63 @@ class DeviceLoginTests(unittest.TestCase):
                         login_with_device_code(paths, "taken")
 
                 self.assertEqual(0, FakeAppServer.started)
+
+    def test_relogin_replaces_existing_account_when_email_matches(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with mock.patch.dict(
+                os.environ,
+                {"CODEX_MANAGER_HOME": f"{tmpdir}/manager", "CODEX_HOME": f"{tmpdir}/codex"},
+                clear=False,
+            ):
+                paths = Paths()
+                ensure_dirs(paths)
+                save_state(paths, {"active": "taken"})
+                atomic_write_json(
+                    account_path(paths, "taken"),
+                    make_auth(refresh_token="old-refresh", account_id="acct-old", email="same@example.com", subject="user-old"),
+                )
+                atomic_write_json(paths.codex_auth, make_auth(refresh_token="live-old", email="same@example.com"))
+                FakeAppServer.email = "same@example.com"
+                FakeAppServer.refresh_token = "replacement-refresh"
+
+                with mock.patch("codex_manager.codex.device_login.CodexAppServer", FakeAppServer):
+                    result = login_with_device_code(
+                        paths,
+                        "taken",
+                        replace_existing=True,
+                        expected_email="same@example.com",
+                    )
+
+                self.assertTrue(result.replaced)
+                self.assertEqual("replacement-refresh", read_json(account_path(paths, "taken"))["tokens"]["refresh_token"])
+                self.assertEqual("replacement-refresh", read_json(paths.codex_auth)["tokens"]["refresh_token"])
+
+    def test_relogin_rejects_email_mismatch_without_replacing_account(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with mock.patch.dict(
+                os.environ,
+                {"CODEX_MANAGER_HOME": f"{tmpdir}/manager", "CODEX_HOME": f"{tmpdir}/codex"},
+                clear=False,
+            ):
+                paths = Paths()
+                ensure_dirs(paths)
+                atomic_write_json(
+                    account_path(paths, "taken"),
+                    make_auth(refresh_token="old-refresh", account_id="acct-old", email="same@example.com", subject="user-old"),
+                )
+                FakeAppServer.email = "other@example.com"
+                FakeAppServer.refresh_token = "wrong-refresh"
+
+                with mock.patch("codex_manager.codex.device_login.CodexAppServer", FakeAppServer):
+                    with self.assertRaisesRegex(ManagerError, "email mismatch"):
+                        login_with_device_code(
+                            paths,
+                            "taken",
+                            replace_existing=True,
+                            expected_email="same@example.com",
+                        )
+
+                self.assertEqual("old-refresh", read_json(account_path(paths, "taken"))["tokens"]["refresh_token"])
 
     def test_next_notification_normalizes_read_timeout(self) -> None:
         server = object.__new__(CodexAppServer)

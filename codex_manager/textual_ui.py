@@ -89,6 +89,9 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
     os.environ.setdefault("FORCE_COLOR", "1")
     os.environ.setdefault("COLORTERM", "truecolor")
     try:
+        from rich.console import Group
+        from rich.panel import Panel
+        from rich.table import Table
         from rich.text import Text
         from textual import events, work
         from textual.app import App, ComposeResult
@@ -338,6 +341,15 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
         #account-table, #chart-status, #device-status, #manual-status, #add-help, #device-login-link, #device-login-code {
             color: #bd93f9;
         }
+        #account-detail-summary {
+            height: auto;
+            min-height: 8;
+            margin-bottom: 1;
+            color: #f8f8f2;
+        }
+        #account-detail-extra {
+            height: 1fr;
+        }
         #account-table {
             height: 1fr;
         }
@@ -435,7 +447,8 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
                                     yield Button("Delete...", id="delete", variant="error", disabled=True)
                         with Vertical(id="accounts-right", classes="panel"):
                             yield Static("Selected Account", classes="title")
-                            yield AccountDetailStatic("", expand=True, id="account-detail")
+                            yield AccountDetailStatic("", id="account-detail-summary")
+                            yield Static("", expand=True, id="account-detail-extra")
                 with TabPane("Add", id="add"):
                     with Vertical():
                         with Vertical(id="add-method-panel", classes="panel"):
@@ -737,7 +750,8 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
                 self._selected_account_name = None
                 self._recommendations = {}
                 self._update_account_action_state()
-                self.query_one("#account-detail", Static).update("Import an auth.json to get started.")
+                self.query_one("#account-detail-summary", AccountDetailStatic).set_detail_content("Import an auth.json to get started.")
+                self.query_one("#account-detail-extra", Static).update("")
                 if update_banner:
                     self._set_banner("No primary account selected yet.")
 
@@ -864,9 +878,10 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
 
         def _update_account_detail(self, name: object) -> None:
             if not isinstance(name, str):
-                self.query_one("#account-detail", AccountDetailStatic).set_detail_content(
+                self.query_one("#account-detail-summary", AccountDetailStatic).set_detail_content(
                     "Pick an account to inspect its auth and limit summary."
                 )
+                self.query_one("#account-detail-extra", Static).update("")
                 return
             active = load_state(paths).get("active")
             row = describe_account(paths, name, active)
@@ -881,7 +896,7 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
                 limit_windows = []
             primary_line = "Primary Account: yes" if row["name"] == active else "Primary Account: no"
             recommendation = self._recommendations.get(name)
-            detail_lines = [
+            summary_lines = [
                 f"Account: {row['name']}",
                 primary_line,
                 f"Email: {row['email']}",
@@ -890,54 +905,75 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
                 f"Expires In: {row['expires']}",
                 f"Limits: {row['limits']}",
             ]
-            if recommendation:
-                detail_lines.extend(["", f"Recommendation: {recommendation.label}", recommendation.reason])
-            if reset_lines:
-                detail_lines.extend(["", *reset_lines])
-            if limit_windows:
-                detail_lines.extend(["", "Limit Visual:"])
-                detail_lines.extend(self._build_limit_visual_lines(limit_windows))
-            detail_lines.extend(["", row["reason"]])
             email_line = 2
-            self.query_one("#account-detail", AccountDetailStatic).set_detail_content(
-                "\n".join(detail_lines),
+            self.query_one("#account-detail-summary", AccountDetailStatic).set_detail_content(
+                "\n".join(summary_lines),
                 email=row["email"],
                 email_line=email_line,
             )
+            self.query_one("#account-detail-extra", Static).update(
+                self._build_account_detail_extra(row["reason"], reset_lines, limit_windows, recommendation)
+            )
 
-        def _build_limit_visual_lines(self, windows: list[dict[str, object]]) -> list[str]:
-            lines: list[str] = []
+        def _build_account_detail_extra(
+            self,
+            reason: str,
+            reset_lines: list[str],
+            windows: list[dict[str, object]],
+            recommendation,
+        ) -> Group:
+            renderables: list[object] = []
+            if windows:
+                renderables.append(self._build_limit_visual_panel(windows))
+            elif reset_lines:
+                renderables.append(Panel(Text("\n".join(reset_lines), style="#ffb86c"), title="Resets", border_style="#6272a4"))
+            renderables.append(Panel(Text(reason, style="#f8f8f2"), title="Status Reason", border_style="#6272a4"))
+            if recommendation:
+                recommendation_text = Text()
+                recommendation_text.append(f"{recommendation.label}\n", style="bold #50fa7b")
+                recommendation_text.append(recommendation.reason, style="#f8f8f2")
+                renderables.append(Panel(recommendation_text, title="Recommendation", border_style="#6272a4"))
+            return Group(*renderables)
+
+        def _build_limit_visual_panel(self, windows: list[dict[str, object]]) -> Panel:
+            body = Table.grid(expand=True)
+            body.add_column(ratio=2)
             for window in windows:
                 label = str(window.get("label") or "window")
                 remaining = window.get("remaining_percent")
                 used = window.get("used_percent")
                 reached = bool(window.get("reached"))
                 reset_text = str(window.get("reset_text") or "unknown")
-                bar = self._detail_limit_bar(remaining, reached=reached)
-                status = "reached" if reached else "available"
-                lines.append(f"{label}: {status}")
+                bar = self._detail_limit_bar(remaining, reached=reached, color="magenta" if label == "weekly" else "cyan")
+                lines = Text()
+                lines.append(f"{label}  ", style="bold #8be9fd")
+                lines.append("reached" if reached else "available", style="bold #ff5555" if reached else "bold #50fa7b")
+                lines.append("\n")
                 lines.append(bar)
+                lines.append("\n")
                 if isinstance(remaining, (int, float)):
-                    remaining_text = f"remaining {remaining:>5.1f}%"
+                    lines.append(f"remaining {remaining:>5.1f}%", style="#f8f8f2")
                 else:
-                    remaining_text = "remaining unknown"
+                    lines.append("remaining unknown", style="dim")
                 if isinstance(used, (int, float)):
-                    remaining_text += f"   used {used:>5.1f}%"
-                lines.append(remaining_text)
-                lines.append(f"reset {reset_text}")
-                lines.append("")
-            if lines and lines[-1] == "":
-                lines.pop()
-            return lines
+                    lines.append(f"   used {used:>5.1f}%", style="#f8f8f2")
+                lines.append("\n")
+                lines.append(f"reset {reset_text}", style="#ffb86c")
+                body.add_row(lines)
+            return Panel(body, title="Limit Visual", border_style="#6272a4")
 
-        def _detail_limit_bar(self, percent: object, *, reached: bool) -> str:
+        def _detail_limit_bar(self, percent: object, *, reached: bool, color: str) -> Text:
             if not isinstance(percent, (int, float)):
-                return "unknown"
+                return Text("unknown", style="dim")
             clamped = max(0.0, min(100.0, float(percent)))
             filled = round(clamped / 5)
             empty = 20 - filled
+            text = Text()
+            fill_style = "bold #ff5555" if reached else f"bold {color}"
             fill_char = "■" if reached else "█"
-            return f"{fill_char * filled}{'░' * empty}"
+            text.append(fill_char * filled, style=fill_style)
+            text.append("░" * empty, style="dim")
+            return text
 
         def _activate_selected_account(self) -> None:
             name = self._selected_account()

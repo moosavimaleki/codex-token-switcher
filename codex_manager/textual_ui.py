@@ -209,13 +209,6 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
             background: #282a36;
             color: #f8f8f2;
         }
-        #banner {
-            height: 3;
-            padding: 1 2;
-            background: #44475a;
-            color: #f8f8f2;
-            text-style: bold;
-        }
         TabbedContent {
             height: 1fr;
         }
@@ -418,10 +411,6 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
 
         def compose(self) -> ComposeResult:
             yield Header(show_clock=True)
-            yield Static(
-                "Codex Manager  Dracula workspace for account switching, imports, and rate-limit history.",
-                id="banner",
-            )
             with TabbedContent(initial=initial_tab):
                 with TabPane("Accounts", id="accounts"):
                     with Horizontal(id="accounts-layout"):
@@ -529,7 +518,7 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
         def on_mount(self) -> None:
             account_table = self.query_one("#account-table", DataTable)
             account_table.add_columns("Pick", "On", "Account", "Email", "State", "Weekly", "5h")
-            self._refresh_dashboard_data(update_banner=True)
+            self._refresh_dashboard_data(update_banner=False)
             self._apply_chart_defaults()
             self._set_add_method("device", focus_input=False)
             self._focus_account_table()
@@ -1396,6 +1385,6 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
             )
 
         def _set_banner(self, message: str) -> None:
-            self.query_one("#banner", Static).update(message)
+            self.notify(message, timeout=3.5)
 
     ManagerApp().run()

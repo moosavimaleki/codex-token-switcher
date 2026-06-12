@@ -227,6 +227,11 @@ def _calendar_label(target: dt.datetime, now: dt.datetime) -> str:
     return f"{day_label} at {local_target.strftime('%H:%M')} {zone}".strip()
 
 
+def _reset_countdown_label(target: dt.datetime, now: dt.datetime) -> str:
+    remaining = max(dt.timedelta(0), target - now)
+    return human_delta(remaining)
+
+
 def format_rate_limit_resets(rate_limits: dict[str, Any] | None, now: dt.datetime | None = None) -> list[str]:
     if not isinstance(rate_limits, dict):
         return []
@@ -255,7 +260,7 @@ def format_rate_limit_resets(rate_limits: dict[str, Any] | None, now: dt.datetim
         label = _window_label(window, fallback)
         reset_at = _window_reset_at(window, fetched_at)
         if label and reset_at is not None:
-            lines.append(f"{prefix}: {_calendar_label(reset_at, current)}")
+            lines.append(f"{prefix}: {_reset_countdown_label(reset_at, current)} left | {_calendar_label(reset_at, current)}")
     return lines
 
 
@@ -297,6 +302,7 @@ def describe_rate_limit_windows(rate_limits: dict[str, Any] | None, now: dt.date
                 "used_percent": float(used) if isinstance(used, (int, float)) else None,
                 "reset_at": reset_at,
                 "reset_text": _calendar_label(reset_at, current) if reset_at is not None else None,
+                "reset_in_text": _reset_countdown_label(reset_at, current) if reset_at is not None else None,
                 "reset_after_seconds": window.get("reset_after_seconds")
                 if isinstance(window.get("reset_after_seconds"), (int, float))
                 else None,

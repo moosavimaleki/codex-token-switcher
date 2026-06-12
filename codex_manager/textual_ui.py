@@ -944,6 +944,7 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
                 used = window.get("used_percent")
                 reached = bool(window.get("reached"))
                 reset_text = str(window.get("reset_text") or "unknown")
+                reset_in_text = str(window.get("reset_in_text") or "unknown")
                 bar = self._detail_limit_bar(remaining, reached=reached, color="magenta" if label == "weekly" else "cyan")
                 lines = Text()
                 lines.append(f"{label}  ", style="bold #8be9fd")
@@ -958,7 +959,9 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
                 if isinstance(used, (int, float)):
                     lines.append(f"   used {used:>5.1f}%", style="#f8f8f2")
                 lines.append("\n")
-                lines.append(f"reset {reset_text}", style="#ffb86c")
+                lines.append(f"reset in {reset_in_text}", style="#ffb86c")
+                lines.append("\n")
+                lines.append(reset_text, style="#bd93f9")
                 body.add_row(lines)
             return Panel(body, title="Limit Visual", border_style="#6272a4")
 

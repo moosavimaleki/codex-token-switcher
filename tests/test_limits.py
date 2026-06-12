@@ -23,8 +23,8 @@ class RateLimitResetFormattingTests(unittest.TestCase):
         lines = format_rate_limit_resets(rate_limits, now=now)
 
         self.assertEqual(2, len(lines))
-        self.assertTrue(lines[0].startswith("5h reset: tomorrow at "))
-        self.assertTrue(lines[1].startswith("Weekly reset: Mon 2026-06-15 at "))
+        self.assertTrue(lines[0].startswith("5h reset: 1d 1h left | tomorrow at "))
+        self.assertTrue(lines[1].startswith("Weekly reset: 3d 0h left | Mon 2026-06-15 at "))
 
     def test_describe_rate_limit_windows_marks_reached_status(self) -> None:
         now = dt.datetime(2026, 6, 12, 9, 0, tzinfo=dt.timezone.utc)
@@ -45,6 +45,7 @@ class RateLimitResetFormattingTests(unittest.TestCase):
         self.assertEqual(2, len(windows))
         self.assertTrue(windows[0]["reached"])
         self.assertTrue(str(windows[0]["reset_text"]).startswith("today at "))
+        self.assertEqual("1h 0m", windows[0]["reset_in_text"])
 
 
 if __name__ == "__main__":

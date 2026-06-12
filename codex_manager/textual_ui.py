@@ -918,10 +918,7 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
                 renderables.append(Panel(Text("\n".join(reset_lines), style="#ffb86c"), title="Resets", border_style="#6272a4"))
             renderables.append(Panel(Text(reason, style="#f8f8f2"), title="Status Reason", border_style="#6272a4"))
             if recommendation:
-                recommendation_text = Text()
-                recommendation_text.append(f"{recommendation.label}\n", style="bold #50fa7b")
-                recommendation_text.append(recommendation.reason, style="#f8f8f2")
-                renderables.append(Panel(recommendation_text, title="Recommendation", border_style="#6272a4"))
+                renderables.append(self._build_recommendation_visual_panel(recommendation))
             return Group(*renderables)
 
         def _build_limit_visual_panel(self, windows: list[dict[str, object]]) -> Panel:
@@ -953,6 +950,64 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
                 lines.append(reset_text, style="#bd93f9")
                 body.add_row(lines)
             return Panel(body, title="Limit Visual", border_style="#6272a4")
+
+        def _build_recommendation_visual_panel(self, recommendation) -> Panel:
+            weekly_remaining = recommendation.weekly_remaining
+            weekly_target = recommendation.weekly_target
+            primary_remaining = recommendation.primary_remaining
+            weekly_used = None if weekly_remaining is None else 100.0 - weekly_remaining
+            target_used = None if weekly_target is None else 100.0 - weekly_target
+            pace_gap = None if recommendation.weekly_health is None else -recommendation.weekly_health
+
+            body = Table.grid(expand=True)
+            body.add_column(width=14, style="bold #8be9fd")
+            body.add_column(ratio=1)
+
+            status_text = Text()
+            status_style = {
+                "BEST": "bold #50fa7b",
+                "OK": "bold #50fa7b",
+                "WAIT": "bold #f1fa8c",
+                "SAVE": "bold #ff5555",
+                "RISK": "bold #ff5555",
+                "STALE": "bold #ffb86c",
+                "CHECK": "bold #ffb86c",
+                "LOGIN": "bold #ff5555",
+            }.get(recommendation.label, "bold #f8f8f2")
+            status_text.append(recommendation.label, style=status_style)
+            body.add_row("Status", status_text)
+            body.add_row("Should Use", self._metric_line(target_used, color="magenta"))
+            body.add_row("Used Now", self._metric_line(weekly_used, color="cyan"))
+            body.add_row("Pace Gap", self._delta_line(pace_gap))
+            body.add_row("5h Reserve", self._metric_line(primary_remaining, color="green"))
+            return Panel(body, title="Recommendation", border_style="#6272a4")
+
+        def _metric_line(self, percent: object, *, color: str) -> Text:
+            if not isinstance(percent, (int, float)):
+                return Text("unknown", style="dim")
+            clamped = max(0.0, min(100.0, float(percent)))
+            filled = round(clamped / 10)
+            empty = 10 - filled
+            text = Text()
+            text.append("█" * filled, style=f"bold {color}")
+            text.append("░" * empty, style="dim")
+            text.append(f" {clamped:>5.1f}%", style=f"bold {color}")
+            return text
+
+        def _delta_line(self, delta: object) -> Text:
+            if not isinstance(delta, (int, float)):
+                return Text("unknown", style="dim")
+            value = float(delta)
+            text = Text()
+            if value > 0:
+                text.append("over ", style="bold #ff5555")
+                text.append(f"+{value:>4.1f}%", style="bold #ff5555")
+            elif value < 0:
+                text.append("under ", style="bold #50fa7b")
+                text.append(f"{value:>5.1f}%", style="bold #50fa7b")
+            else:
+                text.append("on pace 0.0%", style="bold #8be9fd")
+            return text
 
         def _detail_limit_bar(self, percent: object, *, reached: bool, color: str) -> Text:
             if not isinstance(percent, (int, float)):

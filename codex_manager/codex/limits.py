@@ -195,6 +195,117 @@ def _window_text(window: dict[str, Any] | None, fallback: str, compact: bool = F
     return f"{label} {remaining:.0f}% left{reset_text}"
 
 
+def _window_reset_at(window: dict[str, Any] | None, fetched_at: dt.datetime | None) -> dt.datetime | None:
+    if not isinstance(window, dict):
+        return None
+    reset_at = window.get("reset_at")
+    if isinstance(reset_at, (int, float)):
+        timestamp = float(reset_at)
+        if timestamp > 10_000_000_000:
+            timestamp /= 1000.0
+        try:
+            return dt.datetime.fromtimestamp(timestamp, dt.timezone.utc)
+        except (ValueError, OSError, OverflowError):
+            return None
+    reset_after = window.get("reset_after_seconds")
+    if isinstance(reset_after, (int, float)):
+        return (fetched_at or utcnow()) + dt.timedelta(seconds=float(reset_after))
+    return None
+
+
+def _calendar_label(target: dt.datetime, now: dt.datetime) -> str:
+    local_target = target.astimezone()
+    local_now = now.astimezone()
+    day_delta = (local_target.date() - local_now.date()).days
+    if day_delta == 0:
+        day_label = "today"
+    elif day_delta == 1:
+        day_label = "tomorrow"
+    else:
+        day_label = local_target.strftime("%a %Y-%m-%d")
+    zone = local_target.strftime("%Z") or local_target.strftime("%z")
+    return f"{day_label} at {local_target.strftime('%H:%M')} {zone}".strip()
+
+
+def format_rate_limit_resets(rate_limits: dict[str, Any] | None, now: dt.datetime | None = None) -> list[str]:
+    if not isinstance(rate_limits, dict):
+        return []
+    snapshots = rate_limits.get("snapshots")
+    if not isinstance(snapshots, list) or not snapshots:
+        return []
+    codex = next(
+        (item for item in snapshots if isinstance(item, dict) and item.get("limit_id") == "codex"),
+        snapshots[0],
+    )
+    if not isinstance(codex, dict):
+        return []
+    fetched_at_raw = rate_limits.get("fetched_at")
+    fetched_at = None
+    if isinstance(fetched_at_raw, str):
+        try:
+            fetched_at = dt.datetime.fromisoformat(fetched_at_raw.replace("Z", "+00:00")).astimezone(dt.timezone.utc)
+        except ValueError:
+            fetched_at = None
+    current = now or utcnow()
+    lines = []
+    for prefix, window, fallback in (
+        ("5h reset", codex.get("primary"), "5h"),
+        ("Weekly reset", codex.get("secondary"), "weekly"),
+    ):
+        label = _window_label(window, fallback)
+        reset_at = _window_reset_at(window, fetched_at)
+        if label and reset_at is not None:
+            lines.append(f"{prefix}: {_calendar_label(reset_at, current)}")
+    return lines
+
+
+def describe_rate_limit_windows(rate_limits: dict[str, Any] | None, now: dt.datetime | None = None) -> list[dict[str, Any]]:
+    if not isinstance(rate_limits, dict):
+        return []
+    snapshots = rate_limits.get("snapshots")
+    if not isinstance(snapshots, list) or not snapshots:
+        return []
+    codex = next(
+        (item for item in snapshots if isinstance(item, dict) and item.get("limit_id") == "codex"),
+        snapshots[0],
+    )
+    if not isinstance(codex, dict):
+        return []
+    fetched_at_raw = rate_limits.get("fetched_at")
+    fetched_at = None
+    if isinstance(fetched_at_raw, str):
+        try:
+            fetched_at = dt.datetime.fromisoformat(fetched_at_raw.replace("Z", "+00:00")).astimezone(dt.timezone.utc)
+        except ValueError:
+            fetched_at = None
+    current = now or utcnow()
+    windows: list[dict[str, Any]] = []
+    for key, fallback in (("primary", "5h"), ("secondary", "weekly")):
+        window = codex.get(key)
+        if not isinstance(window, dict):
+            continue
+        label = _window_label(window, fallback)
+        remaining = window.get("remaining_percent")
+        used = window.get("used_percent")
+        reset_at = _window_reset_at(window, fetched_at)
+        reached = bool(codex.get("limit_reached")) or (isinstance(remaining, (int, float)) and float(remaining) <= 0.0)
+        windows.append(
+            {
+                "key": key,
+                "label": label or fallback,
+                "remaining_percent": float(remaining) if isinstance(remaining, (int, float)) else None,
+                "used_percent": float(used) if isinstance(used, (int, float)) else None,
+                "reset_at": reset_at,
+                "reset_text": _calendar_label(reset_at, current) if reset_at is not None else None,
+                "reset_after_seconds": window.get("reset_after_seconds")
+                if isinstance(window.get("reset_after_seconds"), (int, float))
+                else None,
+                "reached": reached,
+            }
+        )
+    return windows
+
+
 def format_rate_limits_summary(rate_limits: dict[str, Any] | None, compact: bool = False) -> str:
     if not isinstance(rate_limits, dict):
         return "limits unknown"

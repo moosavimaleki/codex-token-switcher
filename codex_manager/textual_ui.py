@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .auth import account_metadata, read_auth
+from .codex.limits import describe_rate_limit_windows, format_rate_limit_resets
 from .config import ensure_config
 from .errors import ManagerError
 from .history import available_history_accounts, build_history_window
@@ -88,6 +89,9 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
     os.environ.setdefault("FORCE_COLOR", "1")
     os.environ.setdefault("COLORTERM", "truecolor")
     try:
+        from rich.console import Group
+        from rich.panel import Panel
+        from rich.table import Table
         from rich.text import Text
         from textual import work
         from textual.app import App, ComposeResult
@@ -101,7 +105,7 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
             "Textual UI dependencies are missing. Re-run setup.sh or install requirements.txt for the same python interpreter."
         ) from exc
 
-    from .commands.accounts import activate, add_account, delete_account
+    from .commands.accounts import activate, add_account, delete_account, rename_account
     from .codex.device_login import DeviceLoginCode, login_with_device_code
 
     class DeleteConfirmModal(ModalScreen[str | None]):
@@ -127,6 +131,38 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
         def on_button_pressed(self, event: Button.Pressed) -> None:
             if event.button.id == "confirm-delete":
                 self.dismiss(self.account)
+            else:
+                self.dismiss(None)
+
+        def action_cancel(self) -> None:
+            self.dismiss(None)
+
+    class RenameAccountModal(ModalScreen[tuple[str, str] | None]):
+        BINDINGS = [("escape", "cancel", "Cancel")]
+
+        def __init__(self, account: str) -> None:
+            super().__init__()
+            self.account = account
+
+        def compose(self) -> ComposeResult:
+            with Vertical(id="delete-dialog"):
+                yield Static("Rename account", classes="title")
+                yield Static(f"Current: {self.account}", id="delete-account-name")
+                yield Static("New account name", classes="field-label")
+                yield Input(value=self.account, id="rename-account-input")
+                with Horizontal(id="delete-actions", classes="button-row"):
+                    yield Button("Cancel", id="cancel-rename")
+                    yield Button("Rename", id="confirm-rename", variant="primary")
+
+        def on_mount(self) -> None:
+            input_widget = self.query_one("#rename-account-input", Input)
+            input_widget.focus()
+            input_widget.select_all()
+
+        def on_button_pressed(self, event: Button.Pressed) -> None:
+            if event.button.id == "confirm-rename":
+                new_name = self.query_one("#rename-account-input", Input).value.strip()
+                self.dismiss((self.account, new_name))
             else:
                 self.dismiss(None)
 
@@ -343,6 +379,7 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
         BINDINGS = [
             ("q", "quit", "Quit"),
             ("ctrl+r", "refresh_data", "Refresh"),
+            ("ctrl+shift+c", "copy_selection", "Copy"),
             ("ctrl+1", "switch_accounts", "Accounts"),
             ("ctrl+2", "switch_add", "Add"),
             ("ctrl+3", "switch_chart", "Chart"),
@@ -370,9 +407,11 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
                                     zebra_stripes=True,
                                     id="account-table",
                                 )
+                                yield Static("Drag to select text, then press Ctrl+Shift+C to copy.", classes="field-label")
                                 yield Static("Selected Account Actions", classes="section-label")
                                 with Horizontal(classes="button-row"):
                                     yield Button("Activate", id="activate", variant="success", disabled=True)
+                                    yield Button("Rename...", id="rename", disabled=True)
                                     yield Button("Relogin", id="relogin", variant="warning", disabled=True, classes="hidden")
                                     yield Button("Open Chart", id="open-chart", disabled=True)
                                     yield Button("Delete...", id="delete", variant="error", disabled=True)
@@ -478,6 +517,18 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
         def action_switch_chart(self) -> None:
             self._switch_tab("charts", after=self._render_chart_if_possible)
 
+        def action_copy_selection(self) -> None:
+            selection = self.screen.get_selected_text()
+            if not selection:
+                self._set_banner("No text is selected.")
+                return
+            copied_with_system_clipboard = copy_text_to_clipboard(selection)
+            self.copy_to_clipboard(selection)
+            if copied_with_system_clipboard:
+                self._set_banner("Selected text copied to clipboard.")
+            else:
+                self._set_banner("Selected text sent to terminal clipboard.")
+
         def on_select_changed(self, event: Select.Changed) -> None:
             if event.select.id == "chart-account":
                 self._render_chart_if_possible()
@@ -499,6 +550,8 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
                 self._run_check_all()
             elif button_id == "relogin":
                 self._start_relogin_selected_account()
+            elif button_id == "rename":
+                self._rename_selected_account()
             elif button_id == "delete":
                 self._delete_selected_account()
             elif button_id == "open-chart":
@@ -758,6 +811,7 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
             else:
                 relogin_button.add_class("hidden")
             self.query_one("#open-chart", Button).disabled = not has_selection
+            self.query_one("#rename", Button).disabled = not has_selection
             self.query_one("#delete", Button).disabled = not has_selection
             self._update_account_maintenance_status()
 
@@ -792,28 +846,82 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
                 return
             active = load_state(paths).get("active")
             row = describe_account(paths, name, active)
+            reset_lines = []
+            limit_windows = []
+            try:
+                status = read_json(status_path(paths, name))
+                reset_lines = format_rate_limit_resets(status.get("rate_limits"))
+                limit_windows = describe_rate_limit_windows(status.get("rate_limits"))
+            except ManagerError:
+                reset_lines = []
+                limit_windows = []
             primary_line = "Primary Account: yes" if row["name"] == active else "Primary Account: no"
             recommendation = self._recommendations.get(name)
-            detail = [
-                f"Account: {row['name']}",
-                primary_line,
-                f"Email: {row['email']}",
-                f"Account ID: {row['account']}",
-                f"State: {row['state']}",
-                f"Expires In: {row['expires']}",
-                f"Limits: {row['limits']}",
-                "",
-                row["reason"],
-            ]
+            summary = Table.grid(expand=True)
+            summary.add_column(style="bold #8be9fd", width=16)
+            summary.add_column(style="#f8f8f2")
+            summary.add_row("Account", row["name"])
+            summary.add_row("Primary", "yes" if row["name"] == active else "no")
+            summary.add_row("Email", row["email"])
+            summary.add_row("Account ID", row["account"])
+            summary.add_row("State", row["state"])
+            summary.add_row("Expires In", row["expires"])
+            summary.add_row("Limits", row["limits"])
+
+            renderables: list[object] = [summary]
+            if limit_windows:
+                renderables.append(self._build_limit_visual_panel(limit_windows))
+            elif reset_lines:
+                resets = Text("\n".join(reset_lines), style="#ffb86c")
+                renderables.append(Panel(resets, title="Resets", border_style="#6272a4"))
+
+            reason_text = Text(row["reason"], style="#f8f8f2")
+            renderables.append(Panel(reason_text, title="Status Reason", border_style="#6272a4"))
             if recommendation:
-                detail.extend(
-                    [
-                        "",
-                        f"Recommendation: {recommendation.label}",
-                        recommendation.reason,
-                    ]
-                )
-            self.query_one("#account-detail", Static).update("\n".join(detail))
+                recommendation_text = Text()
+                recommendation_text.append(f"{recommendation.label}\n", style="bold #50fa7b")
+                recommendation_text.append(recommendation.reason, style="#f8f8f2")
+                renderables.append(Panel(recommendation_text, title="Recommendation", border_style="#6272a4"))
+            self.query_one("#account-detail", Static).update(Group(*renderables))
+
+        def _build_limit_visual_panel(self, windows: list[dict[str, object]]) -> Panel:
+            body = Table.grid(expand=True)
+            body.add_column(ratio=2)
+            for window in windows:
+                label = str(window.get("label") or "window")
+                remaining = window.get("remaining_percent")
+                used = window.get("used_percent")
+                reached = bool(window.get("reached"))
+                reset_text = str(window.get("reset_text") or "unknown")
+                bar = self._detail_limit_bar(remaining, reached=reached, color="magenta" if label == "weekly" else "cyan")
+                lines = Text()
+                lines.append(f"{label}  ", style="bold #8be9fd")
+                lines.append("reached" if reached else "available", style="bold #ff5555" if reached else "bold #50fa7b")
+                lines.append("\n")
+                lines.append(bar)
+                lines.append("\n")
+                if isinstance(remaining, (int, float)):
+                    lines.append(f"remaining {remaining:>5.1f}%", style="#f8f8f2")
+                else:
+                    lines.append("remaining unknown", style="dim")
+                if isinstance(used, (int, float)):
+                    lines.append(f"   used {used:>5.1f}%", style="#f8f8f2")
+                lines.append("\n")
+                lines.append(f"reset {reset_text}", style="#ffb86c")
+                body.add_row(lines)
+            return Panel(body, title="Limit Visual", border_style="#6272a4")
+
+        def _detail_limit_bar(self, percent: object, *, reached: bool, color: str) -> Text:
+            if not isinstance(percent, (int, float)):
+                return Text("unknown", style="dim")
+            clamped = max(0.0, min(100.0, float(percent)))
+            filled = round(clamped / 5)
+            empty = 20 - filled
+            text = Text()
+            fill_style = "bold #ff5555" if reached else f"bold {color}"
+            text.append("█" * filled, style=fill_style)
+            text.append("░" * empty, style="dim")
+            return text
 
         def _activate_selected_account(self) -> None:
             name = self._selected_account()
@@ -1056,6 +1164,27 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
                 self._set_banner("Select an account first.")
                 return
             self.push_screen(DeleteConfirmModal(name), self._delete_account_after_confirm)
+
+        def _rename_selected_account(self) -> None:
+            name = self._selected_account()
+            if not name:
+                self._set_banner("Select an account first.")
+                return
+            self.push_screen(RenameAccountModal(name), self._rename_account_after_confirm)
+
+        def _rename_account_after_confirm(self, result: tuple[str, str] | None) -> None:
+            if not result:
+                self._set_banner("Rename cancelled.")
+                return
+            old_name, new_name = result
+            try:
+                renamed = rename_account(paths, old_name, new_name)
+            except ManagerError as exc:
+                self._set_banner(str(exc))
+                return
+            self._refresh_dashboard_data(rerender_chart=False, preserve_selected=False)
+            self._select_account_row(renamed)
+            self._set_banner(f"Renamed {old_name} to {renamed}.")
 
         def _delete_account_after_confirm(self, name: str | None) -> None:
             if not name:

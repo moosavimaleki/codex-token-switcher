@@ -3,6 +3,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import os
+import tempfile
 from dataclasses import dataclass
 from typing import Any
 
@@ -91,6 +92,34 @@ def load_rate_limit_history(paths: Paths, account: str | None = None) -> list[di
 
 def available_history_accounts(paths: Paths) -> list[str]:
     return sorted({str(entry.get("account")) for entry in load_rate_limit_history(paths) if entry.get("account")})
+
+
+def rename_history_account(paths: Paths, old_name: str, new_name: str) -> int:
+    rows = load_rate_limit_history(paths)
+    renamed = 0
+    for row in rows:
+        if row.get("account") == old_name:
+            row["account"] = new_name
+            renamed += 1
+    if renamed == 0:
+        return 0
+    ensure_dirs(paths)
+    fd, tmp = tempfile.mkstemp(prefix=f".{paths.history_file.name}.", suffix=".tmp", dir=str(paths.history_dir))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            for row in rows:
+                handle.write(json.dumps(row, ensure_ascii=False))
+                handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, paths.history_file)
+    finally:
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass
+    return renamed
 
 
 def parse_timezone_offset(value: str | None) -> dt.tzinfo:

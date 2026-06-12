@@ -1,14 +1,19 @@
 from __future__ import annotations
 
 import curses
+import os
 import sys
 import time
+from typing import Any
 from pathlib import Path
 
 from ..auth import account_metadata, format_identity, read_auth, same_account_identity, should_promote_live_auth
+from ..codex.limits import LimitFetchError, fetch_rate_limits
+from ..config import ensure_config
 from ..errors import ManagerError
+from ..history import append_rate_limit_history, rename_history_account
 from ..paths import Paths, account_path, ensure_dirs, list_accounts, sanitize_name, status_path
-from ..storage import atomic_write_json, load_state, manager_lock, save_state, write_log
+from ..storage import atomic_write_json, load_state, manager_lock, read_json, save_state, write_log
 from ..time_utils import iso_now
 from ..views import describe_account, print_accounts
 
@@ -172,7 +177,41 @@ def activate(paths: Paths, name: str) -> None:
         state["active"] = name
         state["last_activated_at"] = iso_now()
         save_state(paths, state)
-        write_status(paths, name, "ok", "active")
+        auth = read_auth(src)
+        previous_status = _load_existing_status(paths, name)
+        rate_limits, limits_error = _fetch_account_limits(paths, auth)
+        if rate_limits is not None:
+            append_rate_limit_history(paths, name, rate_limits)
+        else:
+            rate_limits = previous_status.get("rate_limits") if isinstance(previous_status.get("rate_limits"), dict) else None
+        status_message = "active"
+        if limits_error and rate_limits is not None:
+            status_message = f"active; showing cached limits because refresh failed: {limits_error}"
+        elif limits_error:
+            status_message = f"active; {limits_error}"
+        write_status(
+            paths,
+            name,
+            "ok" if rate_limits is not None else "warning" if limits_error else "ok",
+            status_message,
+            rate_limits=rate_limits,
+            limits_error=limits_error,
+        )
+
+
+def _load_existing_status(paths: Paths, name: str) -> dict[str, Any]:
+    try:
+        return read_json(status_path(paths, name))
+    except ManagerError:
+        return {}
+
+
+def _fetch_account_limits(paths: Paths, auth: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
+    config = ensure_config(paths)
+    try:
+        return fetch_rate_limits(auth, proxy_url=config.get("proxy")), None
+    except LimitFetchError as exc:
+        return None, str(exc)
 
 
 def delete_account(paths: Paths, name: str) -> None:
@@ -187,6 +226,32 @@ def delete_account(paths: Paths, name: str) -> None:
         path.unlink()
         status_path(paths, name).unlink(missing_ok=True)
         write_log(paths, f"deleted account {name}")
+
+
+def rename_account(paths: Paths, old_name: str, new_name: str) -> str:
+    old_name = sanitize_name(old_name)
+    new_name = sanitize_name(new_name)
+    if old_name == new_name:
+        raise ManagerError("new name must be different")
+    with manager_lock(paths):
+        src = account_path(paths, old_name)
+        dst = account_path(paths, new_name)
+        if not src.exists():
+            raise ManagerError(f"unknown account: {old_name}")
+        if dst.exists():
+            raise ManagerError(f"account already exists: {new_name}")
+        os.replace(src, dst)
+        old_status = status_path(paths, old_name)
+        new_status = status_path(paths, new_name)
+        if old_status.exists():
+            os.replace(old_status, new_status)
+        renamed_samples = rename_history_account(paths, old_name, new_name)
+        state = load_state(paths)
+        if state.get("active") == old_name:
+            state["active"] = new_name
+            save_state(paths, state)
+        write_log(paths, f"renamed account {old_name} -> {new_name} (history samples: {renamed_samples})")
+    return new_name
 
 
 def interactive_ls(paths: Paths) -> int:

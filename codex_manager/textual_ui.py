@@ -539,7 +539,11 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
 
         def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
             if event.data_table.id == "account-table" and self._active_tab() == "accounts":
-                self._set_selected_account(str(event.row_key.value))
+                selected_name = str(event.row_key.value)
+                self._set_selected_account(selected_name)
+                if event.data_table.cursor_column == 3:
+                    self._copy_account_email(selected_name)
+                    return
                 self._activate_selected_account()
 
         async def on_button_pressed(self, event: Button.Pressed) -> None:
@@ -1086,6 +1090,20 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
                 self._set_banner("Device code copied to clipboard.")
             else:
                 self._set_banner("Device code sent to terminal clipboard.")
+
+        def _copy_account_email(self, name: str) -> None:
+            active = load_state(paths).get("active")
+            row = describe_account(paths, name, active)
+            email = row.get("email") or ""
+            if email == "unknown":
+                self._set_banner(f"{name} does not have a known email to copy.")
+                return
+            copied_with_system_clipboard = copy_text_to_clipboard(email)
+            self.copy_to_clipboard(email)
+            if copied_with_system_clipboard:
+                self._set_banner(f"Copied {email} to clipboard.")
+            else:
+                self._set_banner(f"Sent {email} to terminal clipboard.")
 
         def _cancel_device_login(self) -> None:
             if self._device_login_cancel_event is None or self._device_login_worker_ref is None:

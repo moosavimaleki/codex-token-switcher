@@ -41,13 +41,16 @@ def write_status(
     name: str,
     state: str,
     message: str | None = None,
+    *,
+    preserve_existing: bool = False,
     **extra,
 ) -> None:
-    data = {
+    data = _load_existing_status(paths, name) if preserve_existing else {}
+    data.update({
         "state": state,
         "message": message,
         "last_checked_at": iso_now(),
-    }
+    })
     data.update(extra)
     atomic_write_json(status_path(paths, name), data)
 
@@ -93,27 +96,45 @@ def sync_active(paths: Paths) -> None:
         return
     active_path = account_path(paths, active)
     if not active_path.exists():
-        write_status(paths, active, "warning", "active account file is missing; skipped sync")
+        write_status(
+            paths,
+            active,
+            "warning",
+            "active account file is missing; skipped sync",
+            preserve_existing=True,
+        )
         return
     try:
         auth = read_auth(paths.codex_auth)
         stored_auth = read_auth(active_path)
     except ManagerError as exc:
-        write_status(paths, active, "warning", f"could not sync active auth: {exc}")
+        write_status(
+            paths,
+            active,
+            "warning",
+            f"could not sync active auth: {exc}",
+            preserve_existing=True,
+        )
         return
     same_identity, reason = same_account_identity(stored_auth, auth)
     if not same_identity:
         message = f"skipped sync: {reason}"
-        write_status(paths, active, "warning", message)
+        write_status(paths, active, "warning", message, preserve_existing=True)
         write_log(paths, f"skipped syncing active auth for {active}: {reason}")
         return
     should_promote, promotion_reason = should_promote_live_auth(stored_auth, auth)
     if not should_promote:
-        write_status(paths, active, "ok", promotion_reason)
+        write_status(paths, active, "ok", promotion_reason, preserve_existing=True)
         write_log(paths, f"left manager copy unchanged for {active}: {promotion_reason}")
         return
     atomic_write_json(active_path, auth)
-    write_status(paths, active, "ok", f"synced from live auth: {promotion_reason}")
+    write_status(
+        paths,
+        active,
+        "ok",
+        f"synced from live auth: {promotion_reason}",
+        preserve_existing=True,
+    )
     write_log(paths, f"synced live auth back into manager for {active}: {promotion_reason}")
 
 
@@ -139,7 +160,7 @@ def sync_live_auth_to_matching_account(paths: Paths) -> str | None:
         active = load_state(paths).get("active")
         message = f"live Codex auth does not match any stored account: {format_identity(live_auth)}"
         if active:
-            write_status(paths, active, "warning", message)
+            write_status(paths, active, "warning", message, preserve_existing=True)
         write_log(paths, message)
         return None
 
@@ -152,7 +173,13 @@ def sync_live_auth_to_matching_account(paths: Paths) -> str | None:
     should_promote, promotion_reason = should_promote_live_auth(stored_auth, live_auth)
     if should_promote:
         atomic_write_json(account_path(paths, name), live_auth)
-        write_status(paths, name, "ok", f"synced from live auth: {promotion_reason}")
+        write_status(
+            paths,
+            name,
+            "ok",
+            f"synced from live auth: {promotion_reason}",
+            preserve_existing=True,
+        )
         write_log(paths, f"synced live auth into account {name}: {promotion_reason}")
 
     state = load_state(paths)

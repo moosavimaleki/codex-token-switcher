@@ -13,11 +13,8 @@ from .time_utils import human_delta, parse_datetime, utcnow
 
 
 WEEKLY_PERIOD = dt.timedelta(days=7)
-PRIMARY_PERIOD = dt.timedelta(hours=5)
 STALE_AFTER = dt.timedelta(minutes=15)
 VERY_STALE_AFTER = dt.timedelta(hours=1)
-PRIMARY_MIN_READY = 12.0
-PRIMARY_NEAR_RESET = dt.timedelta(minutes=30)
 WEEKLY_NEAR_RESET = dt.timedelta(hours=12)
 WEEKLY_SOFT_BUFFER = 5.0
 
@@ -33,7 +30,6 @@ class AccountRecommendation:
     weekly_remaining: float | None = None
     weekly_target: float | None = None
     weekly_health: float | None = None
-    primary_remaining: float | None = None
 
 
 @dataclass(frozen=True)
@@ -103,10 +99,9 @@ def _score_account(
     stale = stale_age is None or stale_age > STALE_AFTER
     very_stale = stale_age is None or stale_age > VERY_STALE_AFTER
 
-    primary = _window(snapshot.get("primary"), fetched_at, now, PRIMARY_PERIOD)
-    weekly = _window(snapshot.get("secondary"), fetched_at, now, WEEKLY_PERIOD)
-    if primary is None or weekly is None:
-        return AccountRecommendation(name, "CHECK", "missing 5h or weekly limit data", -inf)
+    weekly = _window(_weekly_window(snapshot), fetched_at, now, WEEKLY_PERIOD)
+    if weekly is None:
+        return AccountRecommendation(name, "CHECK", "missing weekly limit data", -inf)
 
     if bool(snapshot.get("limit_reached")) or weekly.remaining <= 0:
         return AccountRecommendation(
@@ -115,23 +110,21 @@ def _score_account(
             "weekly limit reached",
             -inf,
             weekly_remaining=weekly.remaining,
-            primary_remaining=primary.remaining,
         )
 
     weekly_remaining_time = _remaining_time(weekly, now)
-    primary_remaining_time = _remaining_time(primary, now)
     weekly_target = _weekly_target(weekly_remaining_time, weekly.period, healthy_count, stale)
     weekly_health = weekly.remaining - weekly_target
-    primary_ready = primary.remaining >= PRIMARY_MIN_READY or (
-        primary_remaining_time is not None and primary_remaining_time <= PRIMARY_NEAR_RESET
-    )
     weekly_protected = weekly_health < -WEEKLY_SOFT_BUFFER and not (
         weekly_remaining_time is not None and weekly_remaining_time <= WEEKLY_NEAR_RESET
     )
 
-    score = weekly_health * 3.0 + weekly.remaining * 0.15 + primary.remaining * 0.20
-    if not primary_ready:
-        score -= 80.0
+    # A quota that resets sooner is cheaper to spend now. This keeps account
+    # rotation aligned with the next reset date rather than remaining percent alone.
+    reset_urgency = 0.0
+    if weekly_remaining_time is not None:
+        reset_urgency = 100.0 * (1.0 - weekly_remaining_time / weekly.period)
+    score = weekly_health * 3.0 + weekly.remaining * 0.15 + reset_urgency * 0.35
     if weekly_protected:
         score -= 120.0
     if status_state == "warning":
@@ -142,8 +135,6 @@ def _score_account(
         score -= min(35.0, (stale_age - STALE_AFTER).total_seconds() / 180.0)
 
     label = "OK"
-    if not primary_ready:
-        label = "WAIT"
     if weekly_protected:
         label = "SAVE"
     if stale:
@@ -151,16 +142,12 @@ def _score_account(
 
     reason_parts = [
         f"weekly {weekly.remaining:.0f}% vs target {weekly_target:.0f}% ({weekly_health:+.0f})",
-        f"5h {primary.remaining:.0f}%",
     ]
     if weekly_remaining_time is not None:
         reason_parts.append(f"weekly reset {human_delta(weekly_remaining_time)}")
-    if primary_remaining_time is not None:
-        reason_parts.append(f"5h reset {human_delta(primary_remaining_time)}")
+        reason_parts.append(f"reset priority {reset_urgency:.0f}")
     if weekly_protected:
         reason_parts.append("protect weekly pace")
-    elif not primary_ready:
-        reason_parts.append("wait for 5h reset")
     elif stale:
         reason_parts.append("stale sample")
 
@@ -169,11 +156,10 @@ def _score_account(
         label=label,
         reason=", ".join(reason_parts),
         score=score,
-        recommendable=not weekly_protected and primary_ready and not very_stale,
+        recommendable=not weekly_protected and not very_stale,
         weekly_remaining=weekly.remaining,
         weekly_target=weekly_target,
         weekly_health=weekly_health,
-        primary_remaining=primary.remaining,
     )
 
 
@@ -191,6 +177,14 @@ def _codex_snapshot(rate_limits: Any) -> dict[str, Any] | None:
         ),
         next((item for item in snapshots if isinstance(item, dict)), None),
     )
+
+
+def _weekly_window(snapshot: dict[str, Any]) -> Any:
+    secondary = snapshot.get("secondary")
+    if isinstance(secondary, dict):
+        return secondary
+    primary = snapshot.get("primary")
+    return primary if isinstance(primary, dict) else None
 
 
 def _window(

@@ -47,7 +47,7 @@ def make_rate_limits(
 
 
 class RecommendationTests(unittest.TestCase):
-    def test_weekly_pacing_beats_larger_5h_balance(self) -> None:
+    def test_weekly_pacing_beats_larger_balance(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             with mock.patch.dict(
                 os.environ,
@@ -82,7 +82,7 @@ class RecommendationTests(unittest.TestCase):
                 self.assertFalse(recs["low-weekly"].recommendable)
                 self.assertIn("protect weekly pace", recs["low-weekly"].reason)
 
-    def test_near_5h_reset_can_still_be_recommended(self) -> None:
+    def test_nearer_weekly_reset_wins_when_quota_health_matches(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             with mock.patch.dict(
                 os.environ,
@@ -95,15 +95,15 @@ class RecommendationTests(unittest.TestCase):
                     status_path(paths, "near-reset"),
                     {
                         "state": "ok",
-                        "rate_limits": make_rate_limits(
-                            primary=5,
-                            weekly=95,
-                            primary_reset_seconds=10 * 60,
-                        ),
+                        "rate_limits": make_rate_limits(primary=5, weekly=95, weekly_reset_seconds=10 * 60),
                     },
                 )
+                atomic_write_json(
+                    status_path(paths, "later-reset"),
+                    {"state": "ok", "rate_limits": make_rate_limits(primary=95, weekly=95, weekly_reset_seconds=4 * 24 * 3600)},
+                )
 
-                recs = account_recommendations(paths, ["near-reset"], now=NOW)
+                recs = account_recommendations(paths, ["near-reset", "later-reset"], now=NOW)
 
                 self.assertTrue(recs["near-reset"].recommendable)
                 self.assertEqual("BEST", recs["near-reset"].label)

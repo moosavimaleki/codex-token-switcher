@@ -89,6 +89,10 @@ def _snapshot(
         return None
     primary = _window(details.get("primary_window"))
     secondary = _window(details.get("secondary_window"))
+    # Codex now exposes its sole weekly budget as primary_window. Keep the
+    # persisted schema stable, but store windows by their actual duration.
+    if primary is not None and secondary is None:
+        secondary, primary = primary, None
     credit_snapshot = _credits(credits)
     if primary is None and secondary is None and credit_snapshot is None:
         return None
@@ -102,6 +106,13 @@ def _snapshot(
         "credits": credit_snapshot,
         "plan_type": plan_type if isinstance(plan_type, str) else None,
     }
+
+
+def _is_weekly_window(window: dict[str, Any] | None) -> bool:
+    if not isinstance(window, dict):
+        return False
+    minutes = window.get("window_minutes")
+    return isinstance(minutes, int) and minutes >= 6 * 24 * 60
 
 
 def normalize_rate_limits(payload: dict[str, Any]) -> dict[str, Any]:
@@ -171,7 +182,9 @@ def _window_label(window: dict[str, Any] | None, fallback: str) -> str | None:
         return None
     minutes = window.get("window_minutes")
     if isinstance(minutes, int) and minutes > 0:
-        if minutes % (60 * 24 * 7) == 0:
+        # The current Codex UI exposes one long-running "Weekly limit" even
+        # when the backend reports an implementation-specific duration.
+        if minutes >= 6 * 24 * 60:
             return "weekly"
         if minutes % 60 == 0:
             return f"{minutes // 60}h"
@@ -253,10 +266,7 @@ def format_rate_limit_resets(rate_limits: dict[str, Any] | None, now: dt.datetim
             fetched_at = None
     current = now or utcnow()
     lines = []
-    for prefix, window, fallback in (
-        ("5h reset", codex.get("primary"), "5h"),
-        ("Weekly reset", codex.get("secondary"), "weekly"),
-    ):
+    for prefix, window, fallback in (("Weekly reset", _weekly_window(codex), "weekly"),):
         label = _window_label(window, fallback)
         reset_at = _window_reset_at(window, fetched_at)
         if label and reset_at is not None:
@@ -285,8 +295,7 @@ def describe_rate_limit_windows(rate_limits: dict[str, Any] | None, now: dt.date
             fetched_at = None
     current = now or utcnow()
     windows: list[dict[str, Any]] = []
-    for key, fallback in (("primary", "5h"), ("secondary", "weekly")):
-        window = codex.get(key)
+    for key, fallback, window in (("weekly", "weekly", _weekly_window(codex)),):
         if not isinstance(window, dict):
             continue
         label = _window_label(window, fallback)
@@ -327,8 +336,7 @@ def format_rate_limits_summary(rate_limits: dict[str, Any] | None, compact: bool
     parts = [
         text
         for text in (
-            _window_text(codex.get("primary"), "5h", compact=compact),
-            _window_text(codex.get("secondary"), "weekly", compact=compact),
+            _window_text(_weekly_window(codex), "weekly", compact=compact),
         )
         if text
     ]
@@ -342,3 +350,11 @@ def format_rate_limits_summary(rate_limits: dict[str, Any] | None, compact: bool
         except ValueError:
             pass
     return "; ".join(parts) + stale if parts else "limits unavailable"
+
+
+def _weekly_window(snapshot: dict[str, Any]) -> dict[str, Any] | None:
+    secondary = snapshot.get("secondary")
+    if isinstance(secondary, dict):
+        return secondary
+    primary = snapshot.get("primary")
+    return primary if isinstance(primary, dict) else None

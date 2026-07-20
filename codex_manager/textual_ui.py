@@ -517,7 +517,7 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
 
         def on_mount(self) -> None:
             account_table = self.query_one("#account-table", DataTable)
-            account_table.add_columns("Pick", "On", "Account", "Email", "State", "Weekly", "5h")
+            account_table.add_columns("Pick", "On", "Account", "Email", "State", "Weekly")
             self._refresh_dashboard_data(update_banner=False)
             self._apply_chart_defaults()
             self._set_add_method("device", focus_input=False)
@@ -769,7 +769,6 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
                     row["email"],
                     row["state"],
                     self._limit_bar(recommendation.weekly_remaining if recommendation else None, "magenta"),
-                    self._limit_bar(recommendation.primary_remaining if recommendation else None, "cyan"),
                     key=row["name"],
                 )
 
@@ -954,7 +953,6 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
         def _build_recommendation_visual_panel(self, recommendation) -> Panel:
             weekly_remaining = recommendation.weekly_remaining
             weekly_target = recommendation.weekly_target
-            primary_remaining = recommendation.primary_remaining
             weekly_used = None if weekly_remaining is None else 100.0 - weekly_remaining
             target_used = None if weekly_target is None else 100.0 - weekly_target
             pace_gap = None if recommendation.weekly_health is None else -recommendation.weekly_health
@@ -979,7 +977,6 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
             body.add_row("Should Use", self._metric_line(target_used, color="magenta"))
             body.add_row("Used Now", self._metric_line(weekly_used, color="cyan"))
             body.add_row("Pace Gap", self._delta_line(pace_gap))
-            body.add_row("5h Reserve", self._metric_line(primary_remaining, color="green"))
             return Panel(body, title="Recommendation", border_style="#6272a4")
 
         def _metric_line(self, percent: object, *, color: str) -> Text:
@@ -1394,21 +1391,12 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
             plt.axes_color("#44475a")
             plt.ticks_color("#f8f8f2")
             plt.ticks_style("bold")
-            all_points = (
-                window.primary_points
-                if len(window.primary_points) >= len(window.secondary_points)
-                else window.secondary_points
-            )
+            all_points = window.secondary_points
             x = list(range(len(all_points)))
-            primary_values = [point[1] for point in window.primary_points]
             secondary_values = [point[1] for point in window.secondary_points]
-            primary_x = list(range(len(window.primary_points)))
             secondary_x = list(range(len(window.secondary_points)))
-            primary_color = "cyan"
             secondary_color = "magenta"
             secondary_marker_color = "yellow"
-            if primary_values:
-                plt.plot(primary_x, primary_values, color=primary_color, marker="dot")
             if secondary_values:
                 plt.scatter(secondary_x, secondary_values, color=secondary_marker_color, marker="hd")
                 plt.plot(secondary_x, secondary_values, color=secondary_color, marker="braille")
@@ -1429,14 +1417,12 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
             plt.xfrequency(len(tick_positions))
             plot.refresh()
             legend = Text()
-            legend.append("5h remaining", style="bold cyan")
-            legend.append("   ")
             legend.append("weekly remaining", style="bold magenta")
             legend.append("   ")
             legend.append("weekly samples", style="bold yellow")
             self.query_one("#chart-legend", Static).update(legend)
             self.query_one("#chart-status", Static).update(
-                f"5h line=cyan dots, weekly line=magenta with amber markers, samples={len(all_points)}, window={window.window_label}, lookback={window.offset_label}, tz={window.timezone_label}"
+                f"weekly line=magenta with amber markers, samples={len(all_points)}, window={window.window_label}, lookback={window.offset_label}, tz={window.timezone_label}"
             )
 
         def _set_banner(self, message: str) -> None:

@@ -30,7 +30,7 @@ codex-manager maintain --quiet
 a Dracula palette and gives you one workspace for account browsing, activation, deletion, imports,
 and history charts. The Accounts tab also includes a `Check Now` button that runs the same account
 check flow as `codex-manager check`, refreshing cached limits and history samples in place. `ls`
-shows cached 5-hour and weekly limits from the latest `check`/maintenance run until you trigger
+shows the cached weekly limit from the latest `check`/maintenance run until you trigger
 that refresh.
 
 When `codex-manager add` imports the live `~/.codex/auth.json`, the manager treats that imported

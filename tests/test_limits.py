@@ -3,10 +3,23 @@ from __future__ import annotations
 import datetime as dt
 import unittest
 
-from codex_manager.codex.limits import describe_rate_limit_windows, format_rate_limit_resets
+from codex_manager.codex.limits import describe_rate_limit_windows, format_rate_limit_resets, normalize_rate_limits
 
 
 class RateLimitResetFormattingTests(unittest.TestCase):
+    def test_normalize_moves_a_single_primary_window_to_weekly(self) -> None:
+        rate_limits = normalize_rate_limits(
+            {
+                "rate_limit": {
+                    "allowed": True,
+                    "primary_window": {"used_percent": 36.0, "limit_window_seconds": 720 * 3600},
+                }
+            }
+        )
+        snapshot = rate_limits["snapshots"][0]
+        self.assertIsNone(snapshot["primary"])
+        self.assertEqual(64.0, snapshot["secondary"]["remaining_percent"])
+
     def test_format_rate_limit_resets_uses_tomorrow_and_absolute_day_labels(self) -> None:
         now = dt.datetime(2026, 6, 12, 9, 0, tzinfo=dt.timezone.utc)
         rate_limits = {
@@ -22,9 +35,8 @@ class RateLimitResetFormattingTests(unittest.TestCase):
 
         lines = format_rate_limit_resets(rate_limits, now=now)
 
-        self.assertEqual(2, len(lines))
-        self.assertTrue(lines[0].startswith("5h reset: 1d 1h left | tomorrow at "))
-        self.assertTrue(lines[1].startswith("Weekly reset: 3d 0h left | Mon 2026-06-15 at "))
+        self.assertEqual(1, len(lines))
+        self.assertTrue(lines[0].startswith("Weekly reset: 3d 0h left | Mon 2026-06-15 at "))
 
     def test_describe_rate_limit_windows_marks_reached_status(self) -> None:
         now = dt.datetime(2026, 6, 12, 9, 0, tzinfo=dt.timezone.utc)
@@ -42,10 +54,11 @@ class RateLimitResetFormattingTests(unittest.TestCase):
 
         windows = describe_rate_limit_windows(rate_limits, now=now)
 
-        self.assertEqual(2, len(windows))
+        self.assertEqual(1, len(windows))
+        self.assertEqual("weekly", windows[0]["key"])
         self.assertTrue(windows[0]["reached"])
         self.assertTrue(str(windows[0]["reset_text"]).startswith("today at "))
-        self.assertEqual("1h 0m", windows[0]["reset_in_text"])
+        self.assertEqual("2h 0m", windows[0]["reset_in_text"])
 
 
 if __name__ == "__main__":

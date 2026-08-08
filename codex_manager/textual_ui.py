@@ -1391,10 +1391,12 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
             plt.axes_color("#44475a")
             plt.ticks_color("#f8f8f2")
             plt.ticks_style("bold")
-            all_points = window.secondary_points
+            # Current samples are weekly in secondary; retain historical charts
+            # recorded before the weekly-only schema change.
+            all_points = window.secondary_points or window.primary_points
             x = list(range(len(all_points)))
-            secondary_values = [point[1] for point in window.secondary_points]
-            secondary_x = list(range(len(window.secondary_points)))
+            secondary_values = [point[1] for point in all_points]
+            secondary_x = list(range(len(all_points)))
             secondary_color = "magenta"
             secondary_marker_color = "yellow"
             if secondary_values:

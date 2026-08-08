@@ -14,6 +14,7 @@ from ..system import run_command
 
 CRON_MARKER = "# codex-manager-maintain"
 MONITOR_CRON_MARKER = "# codex-manager-check"
+SESSIONS_CRON_MARKER = "# codex-manager-sessions"
 
 
 def resolve_manager_bin() -> str:
@@ -36,17 +37,24 @@ def monitor_scheduler_paths(paths: Paths) -> tuple[Path, Path]:
     return user_dir / "codex-manager-check.service", user_dir / "codex-manager-check.timer"
 
 
+def sessions_scheduler_paths(paths: Paths) -> tuple[Path, Path]:
+    user_dir = paths.home / ".config/systemd/user"
+    return user_dir / "codex-manager-sessions.service", user_dir / "codex-manager-sessions.timer"
+
+
 def write_text_file(path: Path, content: str, mode: int = 0o644) -> None:
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
     os.chmod(path, mode)
 
 
-def install_crontab(bin_path: str, interval: str, monitor_interval: str) -> str:
+def install_crontab(bin_path: str, interval: str, monitor_interval: str, session_interval: str) -> str:
     schedule = cron_expression(interval)
     line = f"{schedule} {shlex.quote(bin_path)} maintain --quiet >/dev/null 2>&1 {CRON_MARKER}"
     monitor_schedule = cron_expression(monitor_interval)
     monitor_line = f"{monitor_schedule} {shlex.quote(bin_path)} check --quiet >/dev/null 2>&1 {MONITOR_CRON_MARKER}"
+    session_schedule = cron_expression(session_interval)
+    session_line = f"{session_schedule} {shlex.quote(bin_path)} sessions --quiet >/dev/null 2>&1 {SESSIONS_CRON_MARKER}"
     current = subprocess.run(
         ["crontab", "-l"],
         stdout=subprocess.PIPE,
@@ -60,11 +68,14 @@ def install_crontab(bin_path: str, interval: str, monitor_interval: str) -> str:
         for line in existing.splitlines()
         if CRON_MARKER not in line
         and MONITOR_CRON_MARKER not in line
+        and SESSIONS_CRON_MARKER not in line
         and "codex-manager maintain --quiet" not in line
         and "codex-manager check --quiet" not in line
+        and "codex-manager sessions --quiet" not in line
     ]
     lines.append(line)
     lines.append(monitor_line)
+    lines.append(session_line)
     proc = subprocess.run(
         ["crontab", "-"],
         input="\n".join(lines) + "\n",
@@ -75,7 +86,7 @@ def install_crontab(bin_path: str, interval: str, monitor_interval: str) -> str:
     )
     if proc.returncode != 0:
         raise ManagerError(f"failed to install crontab: {proc.stderr.strip()}")
-    return f"crontab: {line}; {monitor_line}"
+    return f"crontab: {line}; {monitor_line}; {session_line}"
 
 
 def apply_scheduler(paths: Paths, bin_path: str | None = None) -> str:
@@ -83,6 +94,7 @@ def apply_scheduler(paths: Paths, bin_path: str | None = None) -> str:
     bin_path = bin_path or resolve_manager_bin()
     service_path, timer_path = scheduler_paths(paths)
     monitor_service_path, monitor_timer_path = monitor_scheduler_paths(paths)
+    sessions_service_path, sessions_timer_path = sessions_scheduler_paths(paths)
     write_text_file(service_path, f"""[Unit]
 Description=Codex Manager maintenance
 
@@ -123,6 +135,26 @@ Unit=codex-manager-check.service
 [Install]
 WantedBy=timers.target
 """)
+    write_text_file(sessions_service_path, f"""[Unit]
+Description=Codex Manager Chrome session monitor
+
+[Service]
+Type=oneshot
+ExecStart={bin_path} sessions --quiet
+""")
+    write_text_file(sessions_timer_path, f"""[Unit]
+Description=Run Codex Manager Chrome session monitor
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec={config["session_monitor_interval"]}
+RandomizedDelaySec=0s
+Persistent=true
+Unit=codex-manager-sessions.service
+
+[Install]
+WantedBy=timers.target
+""")
 
     if shutil.which("systemctl"):
         code, _ = run_command(["systemctl", "--user", "show-environment"], timeout=5)
@@ -131,14 +163,20 @@ WantedBy=timers.target
                 ["systemctl", "--user", "daemon-reload"],
                 ["systemctl", "--user", "enable", "--now", "codex-manager-maintain.timer"],
                 ["systemctl", "--user", "enable", "--now", "codex-manager-check.timer"],
+                ["systemctl", "--user", "enable", "--now", "codex-manager-sessions.timer"],
             ):
                 command_code, output = run_command(command, timeout=10)
                 if command_code != 0:
                     raise ManagerError(f"{' '.join(command)} failed: {output}")
-            return "systemd user timers: codex-manager-maintain.timer, codex-manager-check.timer"
+            return "systemd user timers: codex-manager-maintain.timer, codex-manager-check.timer, codex-manager-sessions.timer"
 
     if shutil.which("crontab"):
-        return install_crontab(bin_path, config["maintain_interval"], config["monitor_interval"])
+        return install_crontab(
+            bin_path,
+            config["maintain_interval"],
+            config["monitor_interval"],
+            config["session_monitor_interval"],
+        )
 
     return "not installed; neither systemd user timers nor crontab are available"
 

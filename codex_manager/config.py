@@ -9,6 +9,7 @@ from .constants import (
     DEFAULT_MAINTAIN_INTERVAL,
     DEFAULT_MONITOR_INTERVAL,
     DEFAULT_RANDOMIZED_DELAY,
+    DEFAULT_SESSION_MONITOR_INTERVAL,
 )
 from .errors import ManagerError
 from .paths import Paths, ensure_dirs
@@ -18,6 +19,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "proxy": None,
     "maintain_interval": DEFAULT_MAINTAIN_INTERVAL,
     "monitor_interval": DEFAULT_MONITOR_INTERVAL,
+    "session_monitor_enabled": False,
+    "session_monitor_interval": DEFAULT_SESSION_MONITOR_INTERVAL,
+    "chrome_root": None,
     "randomized_delay": DEFAULT_RANDOMIZED_DELAY,
     "history_retention_days": DEFAULT_HISTORY_RETENTION_DAYS,
 }
@@ -82,16 +86,36 @@ def normalize_proxy(value: Any) -> str | None:
     return value
 
 
+def normalize_chrome_root(value: Any) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ManagerError("chrome_root must be a directory path or null")
+    value = value.strip()
+    if not value or value.lower() in {"none", "null", "off", "false"}:
+        return None
+    return value
+
+
 def normalize_config(config: dict[str, Any]) -> dict[str, Any]:
     merged = dict(DEFAULT_CONFIG)
     merged.update(config)
     retention_days = merged.get("history_retention_days")
     if not isinstance(retention_days, int) or retention_days < 1:
         raise ManagerError("history_retention_days must be a positive integer")
+    session_monitor_enabled = merged.get("session_monitor_enabled")
+    if not isinstance(session_monitor_enabled, bool):
+        raise ManagerError("session_monitor_enabled must be true or false")
     return {
         "proxy": normalize_proxy(merged.get("proxy")),
         "maintain_interval": normalize_duration(merged.get("maintain_interval"), "maintain_interval"),
         "monitor_interval": normalize_duration(merged.get("monitor_interval"), "monitor_interval"),
+        "session_monitor_enabled": session_monitor_enabled,
+        "session_monitor_interval": normalize_duration(
+            merged.get("session_monitor_interval"),
+            "session_monitor_interval",
+        ),
+        "chrome_root": normalize_chrome_root(merged.get("chrome_root")),
         "randomized_delay": normalize_duration(
             merged.get("randomized_delay"),
             "randomized_delay",

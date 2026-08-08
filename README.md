@@ -19,6 +19,7 @@ account out to `~/.codex/auth.json`, and runs background maintenance that:
 codex-manager add <name> <path-to-working-auth.json>
 codex-manager ls
 codex-manager check
+codex-manager sessions --dry-run
 codex-manager chart --hours 24
 codex-manager compact <session_id>
 codex-manager config
@@ -48,6 +49,13 @@ Codex account is not refreshed by default because Codex itself may be rotating t
 `--refresh-active` only when you intentionally want the manager to refresh the active account.
 Use `--force-refresh` when you want to force refresh requests for inactive accounts.
 
+`codex-manager sessions` reads each local Chrome profile through a temporary, read-only copy of its
+cookie database. It reports and retains at most one Linux session whose application name is exactly
+`Codex` per profile. When there are extras, Windows Codex sessions are revoked first; then the oldest
+remaining Codex login is kept and newer sessions are revoked. It never reports, stores, or revokes web,
+mobile, or non-Codex sessions. Use `--dry-run` to inspect the Codex count without
+revoking anything. Extracted cookies and response `Set-Cookie` values exist only in memory.
+
 `codex-manager chart` opens the Textual chart tab directly. Use `--hours N` or `--days N` and
 `--offset local|UTC|+03:30|-07:00` to control the history window and timezone labeling.
 
@@ -57,8 +65,8 @@ then runs the compaction API with that account and the configured proxy. You can
 rollout `.jsonl` path instead of the raw session id. When multiple `codex` binaries are installed,
 the manager auto-selects the newest version it can find; use `--codex-bin` to override it.
 
-`codex-manager config` opens a small interactive wizard for proxy, maintenance interval, randomized
-delay, and scheduler apply. Script-friendly commands such as `codex-manager config show` and
+`codex-manager config` opens a small interactive wizard for proxy, maintenance interval, Chrome
+session monitoring, randomized delay, and scheduler apply. Script-friendly commands such as `codex-manager config show` and
 `codex-manager config set --proxy http://127.0.0.1:7890 --interval 6h --apply-scheduler` still work.
 
 `codex-manager doctor` prints a colorized status report with:
@@ -91,7 +99,8 @@ the same Python environment that launches `codex-manager`.
 
 Maintenance is scheduled every 6 hours using a user systemd timer when available, otherwise a
 crontab entry. A second 5-minute monitor timer runs `codex-manager check --quiet` so limit history
-stays fresh for charting. The intervals are read from `~/.codex-manager/config.json`; after changing
+stays fresh for charting. A third timer runs `codex-manager sessions --quiet`; it remains idle until
+Chrome session monitoring is enabled in config. The intervals are read from `~/.codex-manager/config.json`; after changing
 them, run:
 
 ```bash
@@ -107,6 +116,9 @@ Default config:
   "proxy": null,
   "maintain_interval": "6h",
   "monitor_interval": "5min",
+  "session_monitor_enabled": false,
+  "session_monitor_interval": "30min",
+  "chrome_root": null,
   "randomized_delay": "10min",
   "history_retention_days": 90
 }

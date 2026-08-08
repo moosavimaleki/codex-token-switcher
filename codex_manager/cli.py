@@ -12,6 +12,7 @@ from .commands import (
     cmd_doctor,
     cmd_ls,
     cmd_maintain,
+    cmd_sessions,
     cmd_scheduler_apply,
 )
 from .errors import ManagerError
@@ -40,6 +41,11 @@ def build_parser() -> argparse.ArgumentParser:
     check.add_argument("--refresh-active", action="store_true", help="also refresh the active live Codex account")
     check.add_argument("--quiet", action="store_true")
     check.set_defaults(func=cmd_check)
+
+    sessions = sub.add_parser("sessions", help="monitor Chrome ChatGPT sessions and revoke excess Codex sessions")
+    sessions.add_argument("--dry-run", action="store_true", help="report excess Codex sessions without revoking them")
+    sessions.add_argument("--quiet", action="store_true")
+    sessions.set_defaults(func=cmd_sessions)
 
     chart = sub.add_parser("chart", help="open the Textual history chart")
     chart.add_argument("--account", help="account name")
@@ -78,6 +84,12 @@ def build_parser() -> argparse.ArgumentParser:
     config_set.add_argument("--proxy", help="HTTP/HTTPS proxy URL, or 'none' to disable")
     config_set.add_argument("--interval", help="maintenance interval, for example 30m, 6h, or 1d")
     config_set.add_argument("--monitor-interval", help="history/check interval, for example 5min")
+    session_monitor_group = config_set.add_mutually_exclusive_group()
+    session_monitor_group.add_argument("--session-monitor", dest="session_monitor", action="store_true", help="enable Chrome session monitoring")
+    session_monitor_group.add_argument("--no-session-monitor", dest="session_monitor", action="store_false", help="disable Chrome session monitoring")
+    config_set.set_defaults(session_monitor=None)
+    config_set.add_argument("--session-monitor-interval", help="Chrome session monitor interval, for example 15min")
+    config_set.add_argument("--chrome-root", help="Chrome profile directory, or 'none' for automatic detection")
     config_set.add_argument("--randomized-delay", help="systemd randomized delay, for example 0s or 10min")
     config_set.add_argument("--history-retention-days", type=int, help="how many days of limit history to keep")
     config_set.add_argument("--apply-scheduler", action="store_true", help="rewrite and restart the installed timer")

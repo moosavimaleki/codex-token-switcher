@@ -1,14 +1,39 @@
 from __future__ import annotations
 
+import datetime as dt
 from pathlib import Path
 
 from .auth import access_expiry, account_metadata, read_auth, should_refresh
+from .config import ensure_config, parse_duration_seconds
 from .errors import ManagerError
 from .codex.limits import format_rate_limits_summary
 from .paths import Paths, list_accounts, status_path
 from .storage import file_mode, load_state, read_json
 from .terminal import bad, dim, info, ok, style, warn
-from .time_utils import human_delta, utcnow
+from .time_utils import human_delta, parse_datetime, utcnow
+
+
+def session_monitor_alert_reason(paths: Paths, plan: str, status: dict) -> str | None:
+    """Return a visible alert when a Plus account is not being monitored."""
+    if plan != "plus" or status.get("session_monitor_disabled") is True:
+        return None
+    config = ensure_config(paths)
+    if not config.get("session_monitor_enabled"):
+        return "session monitoring is disabled in configuration"
+
+    monitor = status.get("session_monitor")
+    if not isinstance(monitor, dict):
+        return "session monitor has not reported for this Plus account"
+    if monitor.get("outcome") == "unavailable":
+        return "ChatGPT browser session is unavailable; Codex sessions cannot be monitored"
+
+    checked_at = parse_datetime(monitor.get("last_checked_at"))
+    if checked_at is None:
+        return "session monitor has no valid last-check timestamp"
+    interval_seconds = parse_duration_seconds(config["session_monitor_interval"], "session_monitor_interval")
+    if utcnow() - checked_at > dt.timedelta(seconds=interval_seconds * 2):
+        return f"last session check was {human_delta(utcnow() - checked_at)} ago"
+    return None
 
 
 def describe_account(paths: Paths, name: str, active: str | None) -> dict[str, str]:
@@ -17,9 +42,10 @@ def describe_account(paths: Paths, name: str, active: str | None) -> dict[str, s
     status_message = None
     chrome_profile = "-"
     plan = "unknown"
-    codex_sessions = "-"
-    revoked_total = "-"
+    codex_sessions = "not checked"
+    revoked_total = "0"
     session_monitor_mode = "not checked yet"
+    status: dict = {}
     sp = status_path(paths, name)
     if sp.exists():
         try:
@@ -33,9 +59,14 @@ def describe_account(paths: Paths, name: str, active: str | None) -> dict[str, s
                 revoke_count = session_monitor.get("revoked_total")
                 if isinstance(session_count, int) and session_count >= 0:
                     codex_sessions = str(session_count)
+                elif session_monitor.get("outcome") == "unavailable":
+                    codex_sessions = "unavailable"
                 if isinstance(revoke_count, int) and revoke_count >= 0:
                     revoked_total = str(revoke_count)
-                session_monitor_mode = "ignored" if session_monitor.get("revocation_disabled") is True else "enabled"
+                if session_monitor.get("outcome") == "unavailable":
+                    session_monitor_mode = "unavailable"
+                else:
+                    session_monitor_mode = "ignored" if session_monitor.get("revocation_disabled") is True else "enabled"
             profile = status.get("chrome_profile")
             if isinstance(profile, dict):
                 directory = profile.get("directory")
@@ -58,6 +89,9 @@ def describe_account(paths: Paths, name: str, active: str | None) -> dict[str, s
             state = status_state
             if status_message:
                 reason = status_message
+        if session_alert := session_monitor_alert_reason(paths, plan, status):
+            state = "session alert"
+            reason = session_alert
         expires = human_delta(exp - utcnow()) if exp else "unknown"
         return {
             "name": name,
@@ -115,6 +149,7 @@ def print_accounts(paths: Paths) -> None:
             "refresh soon": warn("refresh soon"),
             "error": bad("error"),
             "needs_login": bad("needs_login"),
+            "session alert": bad("session alert"),
         }.get(state_label, state_label)
         marker = ok("●") if row["name"] == active else dim("○")
         limits = row["limits"][:35]

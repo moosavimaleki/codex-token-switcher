@@ -7,11 +7,12 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from codex_manager.chatgpt_sessions import ChromeProfile, chatgpt_switch_accounts, codex_sessions
+from codex_manager.chatgpt_sessions import ChromeProfile, ProfileNotSignedIn, chatgpt_switch_accounts, codex_sessions
 from codex_manager.commands.accounts import write_status
 from codex_manager.commands.sessions import monitor_sessions, record_session_monitor_status, session_result_message
 from codex_manager.paths import Paths, account_path, status_path
 from codex_manager.storage import atomic_write_json, read_json, save_state
+from codex_manager.textual_ui import account_rank_sort_key
 from codex_manager.views import describe_account
 
 
@@ -26,6 +27,14 @@ def device(*, client_name: str, platform: str, timestamp: int, session_id: str, 
 
 
 class CodexSessionTests(unittest.TestCase):
+    def test_free_accounts_sort_after_paid_accounts(self) -> None:
+        ranked = sorted(
+            [("free", 100.0, "free"), ("plus", 1.0, "plus")],
+            key=lambda item: account_rank_sort_key(*item),
+        )
+
+        self.assertEqual(["plus", "free"], [item[2] for item in ranked])
+
     def test_session_monitor_status_tracks_counts_and_revoke_total(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             with mock.patch.dict(os.environ, {"CODEX_MANAGER_HOME": f"{tmpdir}/manager"}, clear=False):
@@ -115,6 +124,30 @@ class CodexSessionTests(unittest.TestCase):
                 row = describe_account(paths, "free", None)
 
         self.assertEqual("free", row["plan"])
+
+    def test_plus_account_without_session_monitor_is_an_alert(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with mock.patch.dict(os.environ, {"CODEX_MANAGER_HOME": f"{tmpdir}/manager"}, clear=False):
+                paths = Paths()
+                atomic_write_json(account_path(paths, "plus"), {
+                    "tokens": {
+                        "refresh_token": "refresh-token",
+                        "id_token": {
+                            "email": "plus@example.com",
+                            "https://api.openai.com/auth": {"chatgpt_plan_type": "plus"},
+                        },
+                    },
+                })
+                atomic_write_json(paths.config_file, {
+                    "session_monitor_enabled": True,
+                    "session_monitor_interval": "10min",
+                })
+                save_state(paths, {"active": None})
+
+                row = describe_account(paths, "plus", None)
+
+        self.assertEqual("session alert", row["state"])
+        self.assertIn("has not reported", row["reason"])
 
     def test_account_check_preserves_chrome_profile_mapping(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -216,6 +249,28 @@ class CodexSessionTests(unittest.TestCase):
         self.assertTrue(summary["results"][0]["revocation_disabled"])
         self.assertEqual(2, summary["results"][0]["codex_sessions"])
         fake_client.revoke.assert_not_called()
+
+    def test_monitor_records_unavailable_chatgpt_session(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with mock.patch.dict(os.environ, {"CODEX_MANAGER_HOME": f"{tmpdir}/manager"}, clear=False):
+                paths = Paths()
+                profile = ChromeProfile("google-chrome/Profile 8", paths.manager_home / "fake-Cookies")
+                fake_client = mock.Mock()
+                fake_client.devices.side_effect = ProfileNotSignedIn("not signed in to ChatGPT")
+                with (
+                    mock.patch("codex_manager.commands.sessions.discover_chrome_profiles", return_value=[profile]),
+                    mock.patch("codex_manager.commands.sessions.load_chatgpt_cookies", return_value=object()),
+                    mock.patch("codex_manager.commands.sessions.cache_chrome_profile", return_value="account"),
+                    mock.patch("codex_manager.commands.sessions.ChatGPTSessionClient", return_value=fake_client),
+                ):
+                    summary = monitor_sessions(paths)
+
+                status = read_json(status_path(paths, "account"))["session_monitor"]
+
+        self.assertEqual(0, summary["failures"])
+        self.assertEqual("unavailable", status["outcome"])
+        self.assertIsNone(status["codex_sessions"])
+        self.assertEqual(1, len(status["check_history"]))
 
     def test_dry_run_never_revokes(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

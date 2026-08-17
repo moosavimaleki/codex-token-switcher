@@ -61,6 +61,11 @@ def latest_account_refresh(paths: Paths) -> str | None:
     return latest.isoformat()
 
 
+def account_rank_sort_key(plan: str, score: float, name: str) -> tuple[bool, float, str]:
+    """Keep Free accounts below paid accounts while preserving recommendation rank."""
+    return (plan == "free", -score, name.lower())
+
+
 def run_check_command(paths: Paths) -> dict[str, object]:
     env = os.environ.copy()
     env["CODEX_HOME"] = str(paths.codex_home)
@@ -712,6 +717,7 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
             current_signature = tracked_data_signature(paths)
             if current_signature != self._last_data_signature:
                 self._refresh_dashboard_data()
+                self._set_banner("Dashboard updated from the background monitor.")
 
         def _schedule_background_check(self, *, banner_message: str) -> None:
             if self._check_worker is not None:
@@ -781,7 +787,7 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
                     row["chrome_profile"],
                     self._session_count_badge(row["codex_sessions"]),
                     self._revoked_count_badge(row["revoked_total"]),
-                    row["state"],
+                    self._state_badge(row["state"]),
                     self._limit_bar(recommendation.weekly_remaining if recommendation else None, "magenta"),
                     key=row["name"],
                 )
@@ -793,9 +799,18 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
                 return Text(plan.upper(), style="bold #8be9fd")
             return Text("-", style="dim")
 
+        def _state_badge(self, state: str) -> Text:
+            if state == "session alert":
+                return Text("ALERT", style="bold #ff5555")
+            if state in {"warning", "refresh soon"}:
+                return Text(state, style="bold #ffb86c")
+            if state in {"needs_login", "error"}:
+                return Text(state, style="bold #ff5555")
+            return Text(state, style="bold #8be9fd" if state == "active" else "")
+
         def _session_count_badge(self, value: str) -> Text:
-            if value == "-":
-                return Text("-", style="dim")
+            if not value.isdigit():
+                return Text(value, style="bold #ffb86c" if value == "unavailable" else "dim")
             count = int(value)
             color = "#ff5555" if count > 1 else "#8be9fd"
             return Text(value, style=f"bold {color}")
@@ -823,13 +838,15 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
             return lines
 
         def _ordered_account_names(self, names: list[str]) -> list[str]:
+            active = load_state(paths).get("active")
+            plans = {name: describe_account(paths, name, active)["plan"] for name in names}
             return sorted(
                 names,
-                key=lambda name: (
+                key=lambda name: account_rank_sort_key(
+                    plans[name],
                     self._recommendations.get(name).score if self._recommendations.get(name) else float("-inf"),
                     name,
                 ),
-                reverse=True,
             )
 
         def _limit_bar(self, percent: float | None, color: str) -> Text:

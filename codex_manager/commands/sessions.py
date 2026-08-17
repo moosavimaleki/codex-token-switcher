@@ -50,12 +50,13 @@ def record_session_monitor_status(
     paths: Paths,
     account: str | None,
     *,
-    devices: int,
-    codex_sessions: int,
+    devices: int | None,
+    codex_sessions: int | None,
     excess: int,
     revoked: int,
     revocation_disabled: bool,
     current_device_protected: bool,
+    outcome: str = "ok",
 ) -> None:
     if not account:
         return
@@ -76,6 +77,7 @@ def record_session_monitor_status(
         "revoked_last_run": revoked,
         "revocation_disabled": revocation_disabled,
         "current_device_protected": current_device_protected,
+        "outcome": outcome,
     }
     existing["session_monitor"] = {
         "last_checked_at": check_entry["checked_at"],
@@ -86,6 +88,7 @@ def record_session_monitor_status(
         "revoked_total": previous_total + revoked,
         "revocation_disabled": revocation_disabled,
         "current_device_protected": current_device_protected,
+        "outcome": outcome,
         "check_history": [check_entry, *previous_history[:2]],
     }
     atomic_write_json(path, existing)
@@ -187,6 +190,17 @@ def monitor_sessions(paths: Paths, *, dry_run: bool = False) -> dict:
                 results.append(result)
                 write_log(paths, f"Chrome session monitor: {session_result_message(result, dry_run=dry_run)}")
             except ProfileNotSignedIn:
+                record_session_monitor_status(
+                    paths,
+                    mapped_account,
+                    devices=None,
+                    codex_sessions=None,
+                    excess=0,
+                    revoked=0,
+                    revocation_disabled=session_monitor_is_disabled(paths, mapped_account),
+                    current_device_protected=False,
+                    outcome="unavailable",
+                )
                 result = {
                     "profile": profile.name,
                     "profile_label": profile.label,

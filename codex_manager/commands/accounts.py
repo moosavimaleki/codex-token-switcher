@@ -19,7 +19,7 @@ from ..views import describe_account, print_accounts
 
 
 # Metadata populated by auxiliary scanners must survive a normal account check.
-_PRESERVED_STATUS_FIELDS = ("chrome_profile", "session_monitor_disabled")
+_PRESERVED_STATUS_FIELDS = ("chrome_profile", "session_monitor_disabled", "session_monitor")
 
 
 def atomic_copy_auth(src: Path, dst: Path) -> None:

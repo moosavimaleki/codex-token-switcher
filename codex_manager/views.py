@@ -17,6 +17,9 @@ def describe_account(paths: Paths, name: str, active: str | None) -> dict[str, s
     status_message = None
     chrome_profile = "-"
     plan = "unknown"
+    codex_sessions = "-"
+    revoked_total = "-"
+    session_monitor_mode = "unknown"
     sp = status_path(paths, name)
     if sp.exists():
         try:
@@ -24,6 +27,15 @@ def describe_account(paths: Paths, name: str, active: str | None) -> dict[str, s
             limits = format_rate_limits_summary(status.get("rate_limits"), compact=True)
             status_state = str(status.get("state") or "")
             status_message = str(status.get("message") or "")
+            session_monitor = status.get("session_monitor")
+            if isinstance(session_monitor, dict):
+                session_count = session_monitor.get("codex_sessions")
+                revoke_count = session_monitor.get("revoked_total")
+                if isinstance(session_count, int) and session_count >= 0:
+                    codex_sessions = str(session_count)
+                if isinstance(revoke_count, int) and revoke_count >= 0:
+                    revoked_total = str(revoke_count)
+                session_monitor_mode = "ignored" if session_monitor.get("revocation_disabled") is True else "enabled"
             profile = status.get("chrome_profile")
             if isinstance(profile, dict):
                 directory = profile.get("directory")
@@ -58,6 +70,9 @@ def describe_account(paths: Paths, name: str, active: str | None) -> dict[str, s
             "limits": limits,
             "chrome_profile": chrome_profile,
             "plan": plan,
+            "codex_sessions": codex_sessions,
+            "revoked_total": revoked_total,
+            "session_monitor_mode": session_monitor_mode,
         }
     except ManagerError as exc:
         return {
@@ -71,6 +86,9 @@ def describe_account(paths: Paths, name: str, active: str | None) -> dict[str, s
             "limits": limits,
             "chrome_profile": chrome_profile,
             "plan": plan,
+            "codex_sessions": codex_sessions,
+            "revoked_total": revoked_total,
+            "session_monitor_mode": session_monitor_mode,
         }
 
 

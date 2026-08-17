@@ -520,7 +520,7 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
 
         def on_mount(self) -> None:
             account_table = self.query_one("#account-table", DataTable)
-            account_table.add_columns("Pick", "On", "Account", "Email", "Plan", "Chrome", "State", "Weekly")
+            account_table.add_columns("Pick", "On", "Account", "Email", "Plan", "Chrome", "Codex", "Revoked", "State", "Weekly")
             self._refresh_dashboard_data(update_banner=False)
             self._apply_chart_defaults()
             self._set_add_method("device", focus_input=False)
@@ -779,6 +779,8 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
                     row["email"],
                     self._plan_badge(row["plan"]),
                     row["chrome_profile"],
+                    self._session_count_badge(row["codex_sessions"]),
+                    self._revoked_count_badge(row["revoked_total"]),
                     row["state"],
                     self._limit_bar(recommendation.weekly_remaining if recommendation else None, "magenta"),
                     key=row["name"],
@@ -790,6 +792,18 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
             if plan in {"plus", "pro", "team", "business", "enterprise"}:
                 return Text(plan.upper(), style="bold #8be9fd")
             return Text("-", style="dim")
+
+        def _session_count_badge(self, value: str) -> Text:
+            if value == "-":
+                return Text("-", style="dim")
+            count = int(value)
+            color = "#ff5555" if count > 1 else "#8be9fd"
+            return Text(value, style=f"bold {color}")
+
+        def _revoked_count_badge(self, value: str) -> Text:
+            if value == "-":
+                return Text("-", style="dim")
+            return Text(value, style="bold #ffb86c" if int(value) else "dim")
 
         def _ordered_account_names(self, names: list[str]) -> list[str]:
             return sorted(
@@ -974,6 +988,9 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
                 f"Email: {row['email']}",
                 f"Account ID: {row['account']}",
                 f"Plan: {row['plan']}",
+                f"Codex Sessions: {row['codex_sessions']}",
+                f"Session Revokes: {row['revoked_total']}",
+                f"Session Monitor: {row['session_monitor_mode']}",
                 f"State: {row['state']}",
                 f"Expires In: {row['expires']}",
                 f"Limits: {row['limits']}",

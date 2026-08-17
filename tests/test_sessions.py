@@ -9,7 +9,7 @@ from unittest import mock
 
 from codex_manager.chatgpt_sessions import ChromeProfile, chatgpt_switch_accounts, codex_sessions
 from codex_manager.commands.accounts import write_status
-from codex_manager.commands.sessions import monitor_sessions, session_result_message
+from codex_manager.commands.sessions import monitor_sessions, record_session_monitor_status, session_result_message
 from codex_manager.paths import Paths, account_path, status_path
 from codex_manager.storage import atomic_write_json, read_json, save_state
 from codex_manager.views import describe_account
@@ -26,6 +26,25 @@ def device(*, client_name: str, platform: str, timestamp: int, session_id: str, 
 
 
 class CodexSessionTests(unittest.TestCase):
+    def test_session_monitor_status_tracks_counts_and_revoke_total(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with mock.patch.dict(os.environ, {"CODEX_MANAGER_HOME": f"{tmpdir}/manager"}, clear=False):
+                paths = Paths()
+                record_session_monitor_status(
+                    paths, "account", devices=12, codex_sessions=2, excess=1, revoked=1,
+                    revocation_disabled=False, current_device_protected=True,
+                )
+                record_session_monitor_status(
+                    paths, "account", devices=10, codex_sessions=1, excess=0, revoked=0,
+                    revocation_disabled=True, current_device_protected=False,
+                )
+                status = read_json(status_path(paths, "account"))["session_monitor"]
+
+        self.assertEqual(10, status["devices"])
+        self.assertEqual(1, status["codex_sessions"])
+        self.assertEqual(1, status["revoked_total"])
+        self.assertTrue(status["revocation_disabled"])
+
     def test_chatgpt_switch_accounts_reads_emails_without_retaining_tokens(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -101,6 +120,7 @@ class CodexSessionTests(unittest.TestCase):
                         "directory": "Profile 8",
                         "display_name": "new-5",
                     },
+                    "session_monitor": {"codex_sessions": 1, "revoked_total": 3},
                     "state": "ok",
                 })
 
@@ -110,6 +130,7 @@ class CodexSessionTests(unittest.TestCase):
 
         self.assertEqual("Profile 8", status["chrome_profile"]["directory"])
         self.assertEqual("new-5", status["chrome_profile"]["display_name"])
+        self.assertEqual({"codex_sessions": 1, "revoked_total": 3}, status["session_monitor"])
         self.assertEqual({"weekly": 64}, status["rate_limits"])
 
     def test_only_codex_sessions_are_selected(self) -> None:
@@ -167,23 +188,29 @@ class CodexSessionTests(unittest.TestCase):
         self.assertEqual(2, summary["revoked"])
         self.assertEqual([mock.call("old-linux"), mock.call("windows")], fake_client.revoke.call_args_list)
 
-    def test_monitor_skips_account_with_session_monitor_disabled(self) -> None:
+    def test_monitor_records_but_does_not_revoke_when_session_monitor_disabled(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             with mock.patch.dict(os.environ, {"CODEX_MANAGER_HOME": f"{tmpdir}/manager"}, clear=False):
                 paths = Paths()
                 profile = ChromeProfile("google-chrome/Default", paths.manager_home / "fake-Cookies")
+                fake_client = mock.Mock()
+                fake_client.devices.return_value = [
+                    device(client_name="Codex", platform="linux", timestamp=10, session_id="keep"),
+                    device(client_name="Codex", platform="linux", timestamp=20, session_id="extra"),
+                ]
                 with (
                     mock.patch("codex_manager.commands.sessions.discover_chrome_profiles", return_value=[profile]),
                     mock.patch("codex_manager.commands.sessions.load_chatgpt_cookies", return_value=object()),
                     mock.patch("codex_manager.commands.sessions.cache_chrome_profile", return_value="account"),
                     mock.patch("codex_manager.commands.sessions.session_monitor_is_disabled", return_value=True),
-                    mock.patch("codex_manager.commands.sessions.ChatGPTSessionClient") as client,
+                    mock.patch("codex_manager.commands.sessions.ChatGPTSessionClient", return_value=fake_client),
                 ):
                     summary = monitor_sessions(paths)
 
         self.assertEqual(0, summary["revoked"])
-        self.assertTrue(summary["results"][0]["skipped"])
-        client.assert_not_called()
+        self.assertTrue(summary["results"][0]["revocation_disabled"])
+        self.assertEqual(2, summary["results"][0]["codex_sessions"])
+        fake_client.revoke.assert_not_called()
 
     def test_dry_run_never_revokes(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

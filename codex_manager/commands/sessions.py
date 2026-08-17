@@ -46,6 +46,38 @@ def session_monitor_is_disabled(paths: Paths, account: str | None) -> bool:
         return False
 
 
+def record_session_monitor_status(
+    paths: Paths,
+    account: str | None,
+    *,
+    devices: int,
+    codex_sessions: int,
+    excess: int,
+    revoked: int,
+    revocation_disabled: bool,
+    current_device_protected: bool,
+) -> None:
+    if not account:
+        return
+    path = status_path(paths, account)
+    existing = read_json(path) if path.exists() else {}
+    previous = existing.get("session_monitor")
+    previous_total = previous.get("revoked_total") if isinstance(previous, dict) else 0
+    if not isinstance(previous_total, int) or previous_total < 0:
+        previous_total = 0
+    existing["session_monitor"] = {
+        "last_checked_at": iso_now(),
+        "devices": devices,
+        "codex_sessions": codex_sessions,
+        "excess_codex_sessions": excess,
+        "revoked_last_run": revoked,
+        "revoked_total": previous_total + revoked,
+        "revocation_disabled": revocation_disabled,
+        "current_device_protected": current_device_protected,
+    }
+    atomic_write_json(path, existing)
+
+
 def session_result_message(result: dict, *, dry_run: bool = False) -> str:
     profile = result.get("profile_label") or result.get("profile") or "unknown profile"
     email = result.get("email") or "unknown"
@@ -61,14 +93,14 @@ def session_result_message(result: dict, *, dry_run: bool = False) -> str:
     if result.get("not_signed_in"):
         return f"{profile}: email {email}; ChatGPT session unavailable; skipped{switch_summary}"
     account = result.get("account") or "unmanaged"
-    if result.get("skipped"):
-        return f"{profile}: email {email}; account {account}; session monitoring disabled; skipped{switch_summary}"
-
     devices = result.get("devices", 0)
     codex = result.get("codex_sessions", 0)
     protected = "; current device protected" if result.get("current_device_protected") else ""
     revoked = result.get("revoked", 0)
-    action = f"would revoke {result.get('excess', 0)}" if dry_run else f"revoked {revoked}"
+    if result.get("revocation_disabled"):
+        action = f"revocation disabled; {result.get('excess', 0)} excess left unchanged"
+    else:
+        action = f"would revoke {result.get('excess', 0)}" if dry_run else f"revoked {revoked}"
     return f"{profile}: email {email}; account {account}; devices {devices}; Codex {codex}{protected}; {action}{switch_summary}"
 
 
@@ -87,18 +119,7 @@ def monitor_sessions(paths: Paths, *, dry_run: bool = False) -> dict:
                 cookies = load_chatgpt_cookies(profile)
                 email = chrome_account_email(cookies)
                 mapped_account = cache_chrome_profile(paths, email, profile, switch_accounts)
-                if session_monitor_is_disabled(paths, mapped_account):
-                    result = {
-                        "profile": profile.name,
-                        "profile_label": profile.label,
-                        "account": mapped_account,
-                        "email": email,
-                        "switch_accounts": switch_accounts,
-                        "skipped": True,
-                    }
-                    results.append(result)
-                    write_log(paths, f"Chrome session monitor: {session_result_message(result, dry_run=dry_run)}")
-                    continue
+                revocation_disabled = session_monitor_is_disabled(paths, mapped_account)
                 client = ChatGPTSessionClient(cookies, proxy_url=config.get("proxy"))
                 devices = client.devices()
                 sessions = codex_sessions(devices)
@@ -116,13 +137,26 @@ def monitor_sessions(paths: Paths, *, dry_run: bool = False) -> dict:
                     if len(remaining) > 1:
                         extras = [*extras, *remaining[1:]]
                     keep = [device for device in sessions if device not in extras][:1]
-                for device in extras:
-                    session_id = device.get("session_id")
-                    if not isinstance(session_id, str) or not session_id:
-                        raise ManagerError("Linux Codex session has no session id")
-                    if not dry_run:
-                        client.revoke(session_id)
-                        revoked += 1
+                revoked_for_account = 0
+                if not revocation_disabled:
+                    for device in extras:
+                        session_id = device.get("session_id")
+                        if not isinstance(session_id, str) or not session_id:
+                            raise ManagerError("Linux Codex session has no session id")
+                        if not dry_run:
+                            client.revoke(session_id)
+                            revoked += 1
+                            revoked_for_account += 1
+                record_session_monitor_status(
+                    paths,
+                    mapped_account,
+                    devices=len(devices),
+                    codex_sessions=max(0, len(sessions) - revoked_for_account),
+                    excess=len(extras),
+                    revoked=revoked_for_account,
+                    revocation_disabled=revocation_disabled,
+                    current_device_protected=bool(current),
+                )
                 result = {
                     "profile": profile.name,
                     "profile_label": profile.label,
@@ -132,9 +166,10 @@ def monitor_sessions(paths: Paths, *, dry_run: bool = False) -> dict:
                     "devices": len(devices),
                     "codex_sessions": len(sessions),
                     "current_device_protected": bool(current),
+                    "revocation_disabled": revocation_disabled,
                     "kept_at": session_time(keep[0]) if keep else None,
                     "excess": len(extras),
-                    "revoked": 0 if dry_run else len(extras),
+                    "revoked": revoked_for_account,
                 }
                 results.append(result)
                 write_log(paths, f"Chrome session monitor: {session_result_message(result, dry_run=dry_run)}")

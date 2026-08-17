@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from http.cookiejar import CookieJar
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote
 from urllib.error import HTTPError, URLError
 from urllib.request import HTTPCookieProcessor, ProxyHandler, Request, build_opener
 
@@ -27,6 +28,14 @@ REVOKE_URL = f"{DEVICES_URL}/revoke"
 class ChromeProfile:
     name: str
     cookie_db: Path
+    directory: str = ""
+    display_name: str = ""
+    chrome_root: Path | None = None
+
+    @property
+    def label(self) -> str:
+        display_name = self.display_name or self.directory or self.name
+        return f"{display_name} ({self.directory})" if self.directory else display_name
 
 
 class ProfileNotSignedIn(ManagerError):
@@ -44,6 +53,7 @@ def discover_chrome_profiles(chrome_root: str | None = None) -> list[ChromeProfi
     for root in roots:
         if not root.is_dir():
             continue
+        info_cache = _profile_info_cache(root)
         for profile_dir in sorted(path for path in root.iterdir() if path.is_dir()):
             if profile_dir.name != "Default" and not profile_dir.name.startswith("Profile "):
                 continue
@@ -51,9 +61,36 @@ def discover_chrome_profiles(chrome_root: str | None = None) -> list[ChromeProfi
             if not cookie_db.is_file():
                 cookie_db = profile_dir / "Network" / "Cookies"
             if cookie_db.is_file() and cookie_db not in seen:
-                profiles.append(ChromeProfile(f"{root.name}/{profile_dir.name}", cookie_db))
+                metadata = info_cache.get(profile_dir.name, {})
+                display_name = metadata.get("name") if isinstance(metadata.get("name"), str) else _profile_display_name(profile_dir)
+                profiles.append(ChromeProfile(
+                    f"{root.name}/{profile_dir.name}",
+                    cookie_db,
+                    directory=profile_dir.name,
+                    display_name=display_name,
+                    chrome_root=root,
+                ))
                 seen.add(cookie_db)
     return profiles
+
+
+def _profile_info_cache(root: Path) -> dict[str, dict[str, Any]]:
+    try:
+        payload = json.loads((root / "Local State").read_text(encoding="utf-8"))
+        cache = payload.get("profile", {}).get("info_cache", {})
+    except (OSError, json.JSONDecodeError, AttributeError):
+        return {}
+    return cache if isinstance(cache, dict) else {}
+
+
+def _profile_display_name(profile_dir: Path) -> str:
+    try:
+        payload = json.loads((profile_dir / "Preferences").read_text(encoding="utf-8"))
+        profile = payload.get("profile") if isinstance(payload, dict) else None
+        name = profile.get("name") if isinstance(profile, dict) else None
+    except (OSError, json.JSONDecodeError, AttributeError):
+        return profile_dir.name
+    return name.strip() if isinstance(name, str) and name.strip() else profile_dir.name
 
 
 class _SilentCookieLogger:
@@ -85,6 +122,22 @@ def load_chatgpt_cookies(profile: ChromeProfile) -> CookieJar:
     if not list(jar):
         raise ManagerError("no ChatGPT cookies found in this Chrome profile")
     return jar
+
+
+def chrome_account_email(cookies: CookieJar) -> str | None:
+    try:
+        raw = next((cookie.value for cookie in cookies if cookie.name == "oai-client-auth-info"), None)
+    except TypeError:
+        return None
+    if not raw:
+        return None
+    try:
+        payload = json.loads(unquote(raw))
+        user = payload.get("user") if isinstance(payload, dict) else None
+        email = user.get("email") if isinstance(user, dict) else None
+    except (json.JSONDecodeError, AttributeError):
+        return None
+    return email.strip().lower() if isinstance(email, str) and email.strip() else None
 
 
 class ChatGPTSessionClient:

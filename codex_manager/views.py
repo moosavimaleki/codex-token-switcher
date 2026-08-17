@@ -15,6 +15,8 @@ def describe_account(paths: Paths, name: str, active: str | None) -> dict[str, s
     limits = "limits unknown"
     status_state = None
     status_message = None
+    chrome_profile = "-"
+    plan = "unknown"
     sp = status_path(paths, name)
     if sp.exists():
         try:
@@ -22,11 +24,18 @@ def describe_account(paths: Paths, name: str, active: str | None) -> dict[str, s
             limits = format_rate_limits_summary(status.get("rate_limits"), compact=True)
             status_state = str(status.get("state") or "")
             status_message = str(status.get("message") or "")
+            profile = status.get("chrome_profile")
+            if isinstance(profile, dict):
+                directory = profile.get("directory")
+                display_name = profile.get("display_name")
+                if isinstance(directory, str) and isinstance(display_name, str):
+                    chrome_profile = f"{display_name} ({directory})"
         except ManagerError:
             limits = "limits unknown"
     try:
         auth = read_auth(paths.accounts_dir / f"{name}.json")
         meta = account_metadata(auth)
+        plan = str(meta.get("plan") or "unknown").lower()
         exp = access_expiry(auth)
         need, reason = should_refresh(auth)
         state = "active" if name == active else "refresh soon" if need else "ok"
@@ -44,6 +53,8 @@ def describe_account(paths: Paths, name: str, active: str | None) -> dict[str, s
             "account": meta.get("account_id") or "unknown",
             "reason": reason,
             "limits": limits,
+            "chrome_profile": chrome_profile,
+            "plan": plan,
         }
     except ManagerError as exc:
         return {
@@ -55,6 +66,8 @@ def describe_account(paths: Paths, name: str, active: str | None) -> dict[str, s
             "account": "unknown",
             "reason": str(exc),
             "limits": limits,
+            "chrome_profile": chrome_profile,
+            "plan": plan,
         }
 
 

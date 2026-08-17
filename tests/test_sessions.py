@@ -6,8 +6,11 @@ import unittest
 from unittest import mock
 
 from codex_manager.chatgpt_sessions import ChromeProfile, codex_sessions
+from codex_manager.commands.accounts import write_status
 from codex_manager.commands.sessions import monitor_sessions
-from codex_manager.paths import Paths
+from codex_manager.paths import Paths, account_path, status_path
+from codex_manager.storage import atomic_write_json, read_json, save_state
+from codex_manager.views import describe_account
 
 
 def device(*, client_name: str, platform: str, timestamp: int, session_id: str, current: bool = False) -> dict:
@@ -21,6 +24,45 @@ def device(*, client_name: str, platform: str, timestamp: int, session_id: str, 
 
 
 class CodexSessionTests(unittest.TestCase):
+    def test_describe_account_exposes_free_plan(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with mock.patch.dict(os.environ, {"CODEX_MANAGER_HOME": f"{tmpdir}/manager"}, clear=False):
+                paths = Paths()
+                atomic_write_json(account_path(paths, "free"), {
+                    "tokens": {
+                        "refresh_token": "refresh-token",
+                        "id_token": {
+                            "email": "free@example.com",
+                            "https://api.openai.com/auth": {"chatgpt_plan_type": "free"},
+                        },
+                    },
+                })
+                save_state(paths, {"active": None})
+
+                row = describe_account(paths, "free", None)
+
+        self.assertEqual("free", row["plan"])
+
+    def test_account_check_preserves_chrome_profile_mapping(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with mock.patch.dict(os.environ, {"CODEX_MANAGER_HOME": f"{tmpdir}/manager"}, clear=False):
+                paths = Paths()
+                atomic_write_json(status_path(paths, "account"), {
+                    "chrome_profile": {
+                        "directory": "Profile 8",
+                        "display_name": "new-5",
+                    },
+                    "state": "ok",
+                })
+
+                write_status(paths, "account", "ok", "checked", rate_limits={"weekly": 64})
+
+                status = read_json(status_path(paths, "account"))
+
+        self.assertEqual("Profile 8", status["chrome_profile"]["directory"])
+        self.assertEqual("new-5", status["chrome_profile"]["display_name"])
+        self.assertEqual({"weekly": 64}, status["rate_limits"])
+
     def test_only_codex_sessions_are_selected(self) -> None:
         sessions = codex_sessions([
             device(client_name="Codex", platform="linux", timestamp=10, session_id="linux-old"),
@@ -53,6 +95,46 @@ class CodexSessionTests(unittest.TestCase):
 
         self.assertEqual(2, summary["revoked"])
         self.assertEqual([mock.call("windows"), mock.call("newer-linux")], fake_client.revoke.call_args_list)
+
+    def test_monitor_never_revokes_current_codex_device(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with mock.patch.dict(os.environ, {"CODEX_MANAGER_HOME": f"{tmpdir}/manager"}, clear=False):
+                paths = Paths()
+                fake_client = mock.Mock()
+                fake_client.devices.return_value = [
+                    device(client_name="Codex", platform="linux", timestamp=20, session_id="current", current=True),
+                    device(client_name="Codex", platform="linux", timestamp=10, session_id="old-linux"),
+                    device(client_name="Codex", platform="windows", timestamp=30, session_id="windows"),
+                    device(client_name="ChatGPT Web", platform="linux", timestamp=40, session_id="web"),
+                ]
+                profile = ChromeProfile("google-chrome/Default", paths.manager_home / "fake-Cookies")
+                with (
+                    mock.patch("codex_manager.commands.sessions.discover_chrome_profiles", return_value=[profile]),
+                    mock.patch("codex_manager.commands.sessions.load_chatgpt_cookies", return_value=object()),
+                    mock.patch("codex_manager.commands.sessions.ChatGPTSessionClient", return_value=fake_client),
+                ):
+                    summary = monitor_sessions(paths)
+
+        self.assertEqual(2, summary["revoked"])
+        self.assertEqual([mock.call("old-linux"), mock.call("windows")], fake_client.revoke.call_args_list)
+
+    def test_monitor_skips_account_with_session_monitor_disabled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with mock.patch.dict(os.environ, {"CODEX_MANAGER_HOME": f"{tmpdir}/manager"}, clear=False):
+                paths = Paths()
+                profile = ChromeProfile("google-chrome/Default", paths.manager_home / "fake-Cookies")
+                with (
+                    mock.patch("codex_manager.commands.sessions.discover_chrome_profiles", return_value=[profile]),
+                    mock.patch("codex_manager.commands.sessions.load_chatgpt_cookies", return_value=object()),
+                    mock.patch("codex_manager.commands.sessions.cache_chrome_profile", return_value="account"),
+                    mock.patch("codex_manager.commands.sessions.session_monitor_is_disabled", return_value=True),
+                    mock.patch("codex_manager.commands.sessions.ChatGPTSessionClient") as client,
+                ):
+                    summary = monitor_sessions(paths)
+
+        self.assertEqual(0, summary["revoked"])
+        self.assertTrue(summary["results"][0]["skipped"])
+        client.assert_not_called()
 
     def test_dry_run_never_revokes(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

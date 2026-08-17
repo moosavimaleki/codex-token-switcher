@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 import threading
@@ -14,7 +15,7 @@ from .errors import ManagerError
 from .history import available_history_accounts, build_history_window
 from .paths import Paths, account_path, list_accounts, status_path
 from .recommendation import account_recommendations
-from .storage import load_state, read_json
+from .storage import atomic_write_json, load_state, read_json
 from .system import copy_text_to_clipboard
 from .time_utils import human_delta, parse_datetime, utcnow
 from .views import describe_account
@@ -433,6 +434,8 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
                                     yield Button("Rename...", id="rename", disabled=True)
                                     yield Button("Relogin", id="relogin", variant="warning", disabled=True, classes="hidden")
                                     yield Button("Open Chart", id="open-chart", disabled=True)
+                                    yield Button("Open Chrome", id="open-chrome", disabled=True)
+                                    yield Button("Ignore Sessions", id="toggle-session-monitor", disabled=True)
                                     yield Button("Delete...", id="delete", variant="error", disabled=True)
                         with Vertical(id="accounts-right", classes="panel"):
                             yield Static("Selected Account", classes="title")
@@ -517,7 +520,7 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
 
         def on_mount(self) -> None:
             account_table = self.query_one("#account-table", DataTable)
-            account_table.add_columns("Pick", "On", "Account", "Email", "State", "Weekly")
+            account_table.add_columns("Pick", "On", "Account", "Email", "Plan", "Chrome", "State", "Weekly")
             self._refresh_dashboard_data(update_banner=False)
             self._apply_chart_defaults()
             self._set_add_method("device", focus_input=False)
@@ -564,6 +567,9 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
                 if event.data_table.cursor_column == 3:
                     self._copy_account_email(selected_name)
                     return
+                if event.data_table.cursor_column == 5:
+                    self._open_selected_chrome_profile()
+                    return
                 self._activate_selected_account()
 
         async def on_button_pressed(self, event: Button.Pressed) -> None:
@@ -580,6 +586,10 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
                 self._delete_selected_account()
             elif button_id == "open-chart":
                 self._push_selected_account_to_chart()
+            elif button_id == "open-chrome":
+                self._open_selected_chrome_profile()
+            elif button_id == "toggle-session-monitor":
+                self._toggle_selected_session_monitor()
             elif button_id == "start-device-login":
                 self._start_device_login()
             elif button_id == "cancel-device-login":
@@ -767,10 +777,19 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
                     marker,
                     row["name"],
                     row["email"],
+                    self._plan_badge(row["plan"]),
+                    row["chrome_profile"],
                     row["state"],
                     self._limit_bar(recommendation.weekly_remaining if recommendation else None, "magenta"),
                     key=row["name"],
                 )
+
+        def _plan_badge(self, plan: str) -> Text:
+            if plan == "free":
+                return Text("FREE", style="bold #ffb86c")
+            if plan in {"plus", "pro", "team", "business", "enterprise"}:
+                return Text(plan.upper(), style="bold #8be9fd")
+            return Text("-", style="dim")
 
         def _ordered_account_names(self, names: list[str]) -> list[str]:
             return sorted(
@@ -835,6 +854,11 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
             else:
                 relogin_button.add_class("hidden")
             self.query_one("#open-chart", Button).disabled = not has_selection
+            self.query_one("#open-chrome", Button).disabled = not self._selected_chrome_profile()
+            session_button = self.query_one("#toggle-session-monitor", Button)
+            can_toggle_sessions = self._selected_chrome_profile() is not None
+            session_button.disabled = not can_toggle_sessions
+            session_button.label = "Monitor Sessions" if self._selected_session_monitor_disabled() else "Ignore Sessions"
             self.query_one("#rename", Button).disabled = not has_selection
             self.query_one("#delete", Button).disabled = not has_selection
             self._update_account_maintenance_status()
@@ -845,6 +869,66 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
                 return None
             active = load_state(paths).get("active")
             return describe_account(paths, name, active).get("state")
+
+        def _selected_chrome_profile(self) -> dict[str, str] | None:
+            name = self._selected_account()
+            if not name:
+                return None
+            try:
+                profile = read_json(status_path(paths, name)).get("chrome_profile")
+            except ManagerError:
+                return None
+            if not isinstance(profile, dict):
+                return None
+            directory = profile.get("directory")
+            if not isinstance(directory, str) or not directory:
+                return None
+            return {key: value for key, value in profile.items() if isinstance(value, str)}
+
+        def _selected_session_monitor_disabled(self) -> bool:
+            name = self._selected_account()
+            if not name:
+                return False
+            try:
+                return read_json(status_path(paths, name)).get("session_monitor_disabled") is True
+            except ManagerError:
+                return False
+
+        def _toggle_selected_session_monitor(self) -> None:
+            name = self._selected_account()
+            if not name or self._selected_chrome_profile() is None:
+                self._set_banner("No Chrome profile mapping for this account yet.")
+                return
+            try:
+                status = read_json(status_path(paths, name))
+            except ManagerError:
+                status = {}
+            disabled = not (status.get("session_monitor_disabled") is True)
+            status["session_monitor_disabled"] = disabled
+            atomic_write_json(status_path(paths, name), status)
+            self._update_account_action_state()
+            self._set_banner(
+                f"Session monitoring {'disabled' if disabled else 'enabled'} for {name}."
+            )
+
+        def _open_selected_chrome_profile(self) -> None:
+            profile = self._selected_chrome_profile()
+            if profile is None:
+                self._set_banner("No Chrome profile mapping for this account yet. Run the session scan first.")
+                return
+            chrome = next((shutil.which(name) for name in ("google-chrome", "google-chrome-stable", "chromium") if shutil.which(name)), None)
+            if chrome is None:
+                self._set_banner("Chrome or Chromium was not found in PATH.")
+                return
+            command = [chrome, f"--profile-directory={profile['directory']}"]
+            if root := profile.get("chrome_root"):
+                command.append(f"--user-data-dir={root}")
+            try:
+                subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+            except OSError as exc:
+                self._set_banner(f"Could not open Chrome: {exc}")
+                return
+            self._set_banner(f"Opened Chrome profile {profile['directory']}.")
 
         def _set_selected_account(self, name: str | None) -> None:
             self._selected_account_name = name
@@ -889,6 +973,7 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
                 primary_line,
                 f"Email: {row['email']}",
                 f"Account ID: {row['account']}",
+                f"Plan: {row['plan']}",
                 f"State: {row['state']}",
                 f"Expires In: {row['expires']}",
                 f"Limits: {row['limits']}",

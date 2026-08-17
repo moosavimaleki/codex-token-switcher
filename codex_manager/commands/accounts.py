@@ -18,6 +18,10 @@ from ..time_utils import iso_now
 from ..views import describe_account, print_accounts
 
 
+# Metadata populated by auxiliary scanners must survive a normal account check.
+_PRESERVED_STATUS_FIELDS = ("chrome_profile", "session_monitor_disabled")
+
+
 def atomic_copy_auth(src: Path, dst: Path) -> None:
     atomic_write_json(dst, read_auth(src))
 
@@ -45,7 +49,15 @@ def write_status(
     preserve_existing: bool = False,
     **extra,
 ) -> None:
-    data = _load_existing_status(paths, name) if preserve_existing else {}
+    existing = _load_existing_status(paths, name)
+    if preserve_existing:
+        data = existing
+    else:
+        data = {
+            field: existing[field]
+            for field in _PRESERVED_STATUS_FIELDS
+            if field in existing and field not in extra
+        }
     data.update({
         "state": state,
         "message": message,

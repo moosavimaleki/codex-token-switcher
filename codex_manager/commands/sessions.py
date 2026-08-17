@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from ..auth import account_metadata, read_auth
-from ..chatgpt_sessions import ChatGPTSessionClient, ChromeProfile, ProfileNotSignedIn, chrome_account_email, codex_sessions, discover_chrome_profiles, load_chatgpt_cookies, session_time
+from ..chatgpt_sessions import ChatGPTSessionClient, ChromeProfile, ProfileNotSignedIn, chatgpt_switch_accounts, chrome_account_email, codex_sessions, discover_chrome_profiles, load_chatgpt_cookies, session_time
 from ..config import ensure_config
 from ..errors import ManagerError
 from ..paths import Paths, account_path, list_accounts, status_path
@@ -9,7 +9,12 @@ from ..storage import atomic_write_json, manager_lock, read_json, write_log
 from ..time_utils import iso_now
 
 
-def cache_chrome_profile(paths: Paths, email: str | None, profile: ChromeProfile) -> str | None:
+def cache_chrome_profile(
+    paths: Paths,
+    email: str | None,
+    profile: ChromeProfile,
+    switch_accounts: list[str] | None = None,
+) -> str | None:
     if not email:
         return None
     for name in list_accounts(paths):
@@ -24,6 +29,7 @@ def cache_chrome_profile(paths: Paths, email: str | None, profile: ChromeProfile
                 "directory": profile.directory,
                 "display_name": profile.display_name,
                 "chrome_root": str(profile.chrome_root) if profile.chrome_root else None,
+                "chatgpt_accounts": switch_accounts or [],
                 "updated_at": iso_now(),
             }
             atomic_write_json(path, existing)
@@ -40,6 +46,32 @@ def session_monitor_is_disabled(paths: Paths, account: str | None) -> bool:
         return False
 
 
+def session_result_message(result: dict, *, dry_run: bool = False) -> str:
+    profile = result.get("profile_label") or result.get("profile") or "unknown profile"
+    email = result.get("email") or "unknown"
+    switch_accounts = result.get("switch_accounts")
+    switch_summary = ""
+    if isinstance(switch_accounts, list) and len(switch_accounts) > 1:
+        switch_summary = (
+            f"; WARNING: {len(switch_accounts)} saved ChatGPT accounts: {', '.join(switch_accounts)}"
+            "; session operations apply only to the active email above"
+        )
+    if result.get("error"):
+        return f"{profile}: email {email}; error {result['error']}{switch_summary}"
+    if result.get("not_signed_in"):
+        return f"{profile}: email {email}; ChatGPT session unavailable; skipped{switch_summary}"
+    account = result.get("account") or "unmanaged"
+    if result.get("skipped"):
+        return f"{profile}: email {email}; account {account}; session monitoring disabled; skipped{switch_summary}"
+
+    devices = result.get("devices", 0)
+    codex = result.get("codex_sessions", 0)
+    protected = "; current device protected" if result.get("current_device_protected") else ""
+    revoked = result.get("revoked", 0)
+    action = f"would revoke {result.get('excess', 0)}" if dry_run else f"revoked {revoked}"
+    return f"{profile}: email {email}; account {account}; devices {devices}; Codex {codex}{protected}; {action}{switch_summary}"
+
+
 def monitor_sessions(paths: Paths, *, dry_run: bool = False) -> dict:
     config = ensure_config(paths)
     profiles = discover_chrome_profiles(config.get("chrome_root"))
@@ -48,20 +80,28 @@ def monitor_sessions(paths: Paths, *, dry_run: bool = False) -> dict:
     revoked = 0
     with manager_lock(paths):
         for profile in profiles:
+            email = None
+            mapped_account = None
+            switch_accounts = chatgpt_switch_accounts(profile)
             try:
                 cookies = load_chatgpt_cookies(profile)
-                mapped_account = cache_chrome_profile(paths, chrome_account_email(cookies), profile)
+                email = chrome_account_email(cookies)
+                mapped_account = cache_chrome_profile(paths, email, profile, switch_accounts)
                 if session_monitor_is_disabled(paths, mapped_account):
-                    results.append({
+                    result = {
                         "profile": profile.name,
                         "profile_label": profile.label,
                         "account": mapped_account,
+                        "email": email,
+                        "switch_accounts": switch_accounts,
                         "skipped": True,
-                    })
-                    write_log(paths, f"Chrome session monitor skipped {profile.name}: disabled for account {mapped_account}")
+                    }
+                    results.append(result)
+                    write_log(paths, f"Chrome session monitor: {session_result_message(result, dry_run=dry_run)}")
                     continue
                 client = ChatGPTSessionClient(cookies, proxy_url=config.get("proxy"))
-                sessions = codex_sessions(client.devices())
+                devices = client.devices()
+                sessions = codex_sessions(devices)
                 current = [device for device in sessions if device.get("is_current_device") is True]
                 if current:
                     # The browser's current device is never revoked, even when it
@@ -87,21 +127,38 @@ def monitor_sessions(paths: Paths, *, dry_run: bool = False) -> dict:
                     "profile": profile.name,
                     "profile_label": profile.label,
                     "account": mapped_account,
+                    "email": email,
+                    "switch_accounts": switch_accounts,
+                    "devices": len(devices),
                     "codex_sessions": len(sessions),
+                    "current_device_protected": bool(current),
                     "kept_at": session_time(keep[0]) if keep else None,
                     "excess": len(extras),
                     "revoked": 0 if dry_run else len(extras),
                 }
                 results.append(result)
-                if extras:
-                    action = "would revoke" if dry_run else "revoked"
-                    write_log(paths, f"Chrome session monitor {action} {result['revoked'] if not dry_run else len(extras)} excess Codex session(s) for {profile.name}")
+                write_log(paths, f"Chrome session monitor: {session_result_message(result, dry_run=dry_run)}")
             except ProfileNotSignedIn:
-                results.append({"profile": profile.name, "not_signed_in": True})
+                result = {
+                    "profile": profile.name,
+                    "profile_label": profile.label,
+                    "email": email,
+                    "switch_accounts": switch_accounts,
+                    "not_signed_in": True,
+                }
+                results.append(result)
+                write_log(paths, f"Chrome session monitor: {session_result_message(result, dry_run=dry_run)}")
             except ManagerError as exc:
                 failures += 1
-                results.append({"profile": profile.name, "error": str(exc)})
-                write_log(paths, f"Chrome session monitor failed for {profile.name}: {exc}")
+                result = {
+                    "profile": profile.name,
+                    "profile_label": profile.label,
+                    "email": email,
+                    "switch_accounts": switch_accounts,
+                    "error": str(exc),
+                }
+                results.append(result)
+                write_log(paths, f"Chrome session monitor: {session_result_message(result, dry_run=dry_run)}")
     return {"profiles": len(profiles), "results": results, "revoked": revoked, "failures": failures}
 
 
@@ -115,19 +172,6 @@ def cmd_sessions(args) -> int:
         if not summary["profiles"]:
             print("no Chrome profiles with a Cookies database found")
         for result in summary["results"]:
-            if result.get("error"):
-                print(f"{result['profile']}: {result['error']}")
-                continue
-            if result.get("not_signed_in"):
-                print(f"{result['profile']}: not signed in")
-                continue
-            if result.get("skipped"):
-                print(f"{result.get('profile_label', result['profile'])}: skipped (disabled for {result['account']})")
-                continue
-            text = f"{result.get('profile_label', result['profile'])}: Codex {result['codex_sessions']}"
-            if result["excess"]:
-                action = "would revoke" if args.dry_run else "revoked"
-                text += f"; {action} {result['revoked'] if not args.dry_run else result['excess']} excess"
-            print(text)
+            print(session_result_message(result, dry_run=args.dry_run))
         print(f"checked {summary['profiles']} Chrome profile(s); revoked {summary['revoked']}; failures {summary['failures']}")
     return 1 if summary["failures"] else 0

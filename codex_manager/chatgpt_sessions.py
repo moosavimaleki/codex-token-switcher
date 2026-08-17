@@ -22,6 +22,7 @@ CHATGPT_HOST = "chatgpt.com"
 SESSION_URL = f"https://{CHATGPT_HOST}/api/auth/session"
 DEVICES_URL = f"https://{CHATGPT_HOST}/backend-api/accounts/sessions"
 REVOKE_URL = f"{DEVICES_URL}/revoke"
+ACCOUNT_SWITCH_STORAGE_KEY = b"oai/apps/accountSwitchSessions"
 
 
 @dataclass(frozen=True)
@@ -138,6 +139,60 @@ def chrome_account_email(cookies: CookieJar) -> str | None:
     except (json.JSONDecodeError, AttributeError):
         return None
     return email.strip().lower() if isinstance(email, str) and email.strip() else None
+
+
+def chatgpt_switch_accounts(profile: ChromeProfile) -> list[str]:
+    """Return the account-switcher emails stored by ChatGPT, without retaining tokens."""
+    if profile.chrome_root is None or not profile.directory:
+        return []
+    profile_dir = profile.chrome_root / profile.directory
+    storage_dirs = [
+        profile_dir / "Local Storage" / "leveldb",
+        profile_dir / "IndexedDB" / "https_chatgpt.com_0.indexeddb.leveldb",
+    ]
+
+    candidates: list[tuple[int, list[str]]] = []
+    decoder = json.JSONDecoder()
+    for storage_dir in storage_dirs:
+        if not storage_dir.is_dir():
+            continue
+        for path in storage_dir.iterdir():
+            if not path.is_file():
+                continue
+            try:
+                contents = path.read_bytes()
+            except OSError:
+                continue
+            start = 0
+            while (offset := contents.find(ACCOUNT_SWITCH_STORAGE_KEY, start)) >= 0:
+                start = offset + len(ACCOUNT_SWITCH_STORAGE_KEY)
+                value = contents[start:]
+                array_start = value.find(b"[")
+                if array_start < 0:
+                    continue
+                try:
+                    parsed, _ = decoder.raw_decode(value[array_start:].decode("utf-8", errors="ignore"))
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(parsed, list):
+                    continue
+                emails: list[str] = []
+                latest_login = 0
+                for item in parsed:
+                    if not isinstance(item, dict):
+                        continue
+                    email = item.get("email")
+                    if isinstance(email, str) and email.strip():
+                        emails.append(email.strip().lower())
+                    logged_in_at = item.get("lastLoggedInAt")
+                    if isinstance(logged_in_at, int):
+                        latest_login = max(latest_login, logged_in_at)
+                if emails:
+                    candidates.append((latest_login, sorted(set(emails))))
+
+    if not candidates:
+        return []
+    return max(candidates, key=lambda item: (item[0], len(item[1])))[1]
 
 
 class ChatGPTSessionClient:

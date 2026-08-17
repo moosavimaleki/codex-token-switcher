@@ -30,6 +30,9 @@ def describe_account(paths: Paths, name: str, active: str | None) -> dict[str, s
                 display_name = profile.get("display_name")
                 if isinstance(directory, str) and isinstance(display_name, str):
                     chrome_profile = f"{display_name} ({directory})"
+                    switch_accounts = profile.get("chatgpt_accounts")
+                    if isinstance(switch_accounts, list) and len(switch_accounts) > 1:
+                        chrome_profile += f" [{len(switch_accounts)} ChatGPT]"
         except ManagerError:
             limits = "limits unknown"
     try:

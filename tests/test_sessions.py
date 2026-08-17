@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
-from codex_manager.chatgpt_sessions import ChromeProfile, codex_sessions
+from codex_manager.chatgpt_sessions import ChromeProfile, chatgpt_switch_accounts, codex_sessions
 from codex_manager.commands.accounts import write_status
-from codex_manager.commands.sessions import monitor_sessions
+from codex_manager.commands.sessions import monitor_sessions, session_result_message
 from codex_manager.paths import Paths, account_path, status_path
 from codex_manager.storage import atomic_write_json, read_json, save_state
 from codex_manager.views import describe_account
@@ -24,6 +26,53 @@ def device(*, client_name: str, platform: str, timestamp: int, session_id: str, 
 
 
 class CodexSessionTests(unittest.TestCase):
+    def test_chatgpt_switch_accounts_reads_emails_without_retaining_tokens(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            storage = root / "Profile 2" / "Local Storage" / "leveldb"
+            storage.mkdir(parents=True)
+            storage.joinpath("000001.ldb").write_bytes(
+                b"prefix" + b"oai/apps/accountSwitchSessions" + json.dumps([
+                    {"email": "first@example.com", "sessionToken": "secret-1", "lastLoggedInAt": 10},
+                    {"email": "second@example.com", "sessionToken": "secret-2", "lastLoggedInAt": 20},
+                ]).encode() + b"suffix"
+            )
+            profile = ChromeProfile("google-chrome/Profile 2", root / "Profile 2" / "Cookies", "Profile 2", chrome_root=root)
+
+            accounts = chatgpt_switch_accounts(profile)
+
+        self.assertEqual(["first@example.com", "second@example.com"], accounts)
+
+    def test_session_result_message_reports_email_devices_and_revocations(self) -> None:
+        message = session_result_message({
+            "profile_label": "moosavi.eruka (Profile 2)",
+            "email": "xuylpino008+5@gmail.com",
+            "account": "new2-gh",
+            "devices": 12,
+            "codex_sessions": 2,
+            "current_device_protected": True,
+            "excess": 1,
+            "revoked": 1,
+        })
+
+        self.assertEqual(
+            "moosavi.eruka (Profile 2): email xuylpino008+5@gmail.com; account new2-gh; "
+            "devices 12; Codex 2; current device protected; revoked 1",
+            message,
+        )
+
+    def test_session_result_message_warns_for_multiple_saved_accounts(self) -> None:
+        message = session_result_message({
+            "profile_label": "moosavi.eruka (Profile 2)",
+            "email": "xuylpino008+5@gmail.com",
+            "account": "gh-pppp",
+            "skipped": True,
+            "switch_accounts": ["moosavi.eruka@gmail.com", "xuylpino008+5@gmail.com"],
+        })
+
+        self.assertIn("WARNING: 2 saved ChatGPT accounts", message)
+        self.assertIn("session operations apply only to the active email above", message)
+
     def test_describe_account_exposes_free_plan(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             with mock.patch.dict(os.environ, {"CODEX_MANAGER_HOME": f"{tmpdir}/manager"}, clear=False):

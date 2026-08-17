@@ -30,20 +30,25 @@ class CodexSessionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             with mock.patch.dict(os.environ, {"CODEX_MANAGER_HOME": f"{tmpdir}/manager"}, clear=False):
                 paths = Paths()
-                record_session_monitor_status(
-                    paths, "account", devices=12, codex_sessions=2, excess=1, revoked=1,
-                    revocation_disabled=False, current_device_protected=True,
-                )
-                record_session_monitor_status(
-                    paths, "account", devices=10, codex_sessions=1, excess=0, revoked=0,
-                    revocation_disabled=True, current_device_protected=False,
-                )
+                with mock.patch("codex_manager.commands.sessions.iso_now", side_effect=[
+                    "2026-08-17T10:00:00Z",
+                    "2026-08-17T11:00:00Z",
+                ]):
+                    record_session_monitor_status(
+                        paths, "account", devices=12, codex_sessions=2, excess=1, revoked=1,
+                        revocation_disabled=False, current_device_protected=True,
+                    )
+                    record_session_monitor_status(
+                        paths, "account", devices=10, codex_sessions=1, excess=0, revoked=0,
+                        revocation_disabled=True, current_device_protected=False,
+                    )
                 status = read_json(status_path(paths, "account"))["session_monitor"]
 
         self.assertEqual(10, status["devices"])
         self.assertEqual(1, status["codex_sessions"])
         self.assertEqual(1, status["revoked_total"])
         self.assertTrue(status["revocation_disabled"])
+        self.assertEqual(["2026-08-17T11:00:00Z", "2026-08-17T10:00:00Z"], [item["checked_at"] for item in status["check_history"]])
 
     def test_chatgpt_switch_accounts_reads_emails_without_retaining_tokens(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

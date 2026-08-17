@@ -805,6 +805,23 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
                 return Text("-", style="dim")
             return Text(value, style="bold #ffb86c" if int(value) else "dim")
 
+        def _session_check_history_lines(self, status: dict[str, object]) -> list[str]:
+            session_monitor = status.get("session_monitor")
+            if not isinstance(session_monitor, dict):
+                return []
+            history = session_monitor.get("check_history")
+            if not isinstance(history, list):
+                return []
+            lines: list[str] = []
+            for entry in history[:3]:
+                if not isinstance(entry, dict):
+                    continue
+                checked_at = parse_datetime(entry.get("checked_at"))
+                if checked_at is None:
+                    continue
+                lines.append(checked_at.astimezone().strftime("%Y-%m-%d %H:%M:%S %Z"))
+            return lines
+
         def _ordered_account_names(self, names: list[str]) -> list[str]:
             return sorted(
                 names,
@@ -978,9 +995,11 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
                 reset_lines = format_rate_limit_resets(status.get("rate_limits"))
                 limit_windows = describe_rate_limit_windows(status.get("rate_limits"))
             except ManagerError:
+                status = {}
                 reset_lines = []
                 limit_windows = []
             primary_line = "Primary Account: yes" if row["name"] == active else "Primary Account: no"
+            session_check_lines = self._session_check_history_lines(status)
             recommendation = self._recommendations.get(name)
             summary_lines = [
                 f"Account: {row['name']}",
@@ -994,7 +1013,11 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
                 f"State: {row['state']}",
                 f"Expires In: {row['expires']}",
                 f"Limits: {row['limits']}",
+                "Session Checks:"
+                if session_check_lines
+                else "Session Checks: none yet",
             ]
+            summary_lines.extend(f"  {line}" for line in session_check_lines)
             email_line = 2
             self.query_one("#account-detail-summary", AccountDetailStatic).set_detail_content(
                 "\n".join(summary_lines),

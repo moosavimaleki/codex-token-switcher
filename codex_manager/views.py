@@ -19,7 +19,7 @@ def describe_account(paths: Paths, name: str, active: str | None) -> dict[str, s
     plan = "unknown"
     codex_sessions = "-"
     revoked_total = "-"
-    session_monitor_mode = "unknown"
+    session_monitor_mode = "not checked yet"
     sp = status_path(paths, name)
     if sp.exists():
         try:

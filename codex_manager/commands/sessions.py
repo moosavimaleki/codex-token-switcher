@@ -63,10 +63,22 @@ def record_session_monitor_status(
     existing = read_json(path) if path.exists() else {}
     previous = existing.get("session_monitor")
     previous_total = previous.get("revoked_total") if isinstance(previous, dict) else 0
+    previous_history = previous.get("check_history") if isinstance(previous, dict) else []
+    if not isinstance(previous_history, list):
+        previous_history = []
     if not isinstance(previous_total, int) or previous_total < 0:
         previous_total = 0
+    check_entry = {
+        "checked_at": iso_now(),
+        "devices": devices,
+        "codex_sessions": codex_sessions,
+        "excess_codex_sessions": excess,
+        "revoked_last_run": revoked,
+        "revocation_disabled": revocation_disabled,
+        "current_device_protected": current_device_protected,
+    }
     existing["session_monitor"] = {
-        "last_checked_at": iso_now(),
+        "last_checked_at": check_entry["checked_at"],
         "devices": devices,
         "codex_sessions": codex_sessions,
         "excess_codex_sessions": excess,
@@ -74,6 +86,7 @@ def record_session_monitor_status(
         "revoked_total": previous_total + revoked,
         "revocation_disabled": revocation_disabled,
         "current_device_protected": current_device_protected,
+        "check_history": [check_entry, *previous_history[:2]],
     }
     atomic_write_json(path, existing)
 

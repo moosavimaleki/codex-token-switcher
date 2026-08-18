@@ -99,9 +99,9 @@ the same Python environment that launches `codex-manager`.
 
 Maintenance is scheduled every 6 hours using a user systemd timer when available, otherwise a
 crontab entry. A second 5-minute monitor timer runs `codex-manager check --quiet` so limit history
-stays fresh for charting. A third timer runs `codex-manager sessions --quiet`; it remains idle until
-Chrome session monitoring is enabled in config. The intervals are read from `~/.codex-manager/config.json`; after changing
-them, run:
+stays fresh for charting. A third timer runs `codex-manager sessions --quiet` every 10 minutes by
+default. Chrome session monitoring can be disabled in config. The intervals are read from
+`~/.codex-manager/config.json`; after changing them, run:
 
 ```bash
 codex-manager config
@@ -116,8 +116,8 @@ Default config:
   "proxy": null,
   "maintain_interval": "6h",
   "monitor_interval": "5min",
-  "session_monitor_enabled": false,
-  "session_monitor_interval": "30min",
+  "session_monitor_enabled": true,
+  "session_monitor_interval": "10min",
   "chrome_root": null,
   "randomized_delay": "10min",
   "history_retention_days": 90

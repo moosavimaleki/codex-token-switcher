@@ -26,6 +26,11 @@ def session_monitor_alert_reason(paths: Paths, plan: str, status: dict) -> str |
         return "session monitor has not reported for this Plus account"
     if monitor.get("outcome") == "unavailable":
         return "ChatGPT browser session is unavailable; Codex sessions cannot be monitored"
+    if monitor.get("outcome") == "error":
+        detail = monitor.get("error")
+        if isinstance(detail, str) and detail:
+            return f"session monitor failed: {detail}"
+        return "session monitor failed; Codex sessions cannot be monitored"
 
     checked_at = parse_datetime(monitor.get("last_checked_at"))
     if checked_at is None:
@@ -61,10 +66,14 @@ def describe_account(paths: Paths, name: str, active: str | None) -> dict[str, s
                     codex_sessions = str(session_count)
                 elif session_monitor.get("outcome") == "unavailable":
                     codex_sessions = "unavailable"
+                elif session_monitor.get("outcome") == "error":
+                    codex_sessions = "error"
                 if isinstance(revoke_count, int) and revoke_count >= 0:
                     revoked_total = str(revoke_count)
                 if session_monitor.get("outcome") == "unavailable":
                     session_monitor_mode = "unavailable"
+                elif session_monitor.get("outcome") == "error":
+                    session_monitor_mode = "error"
                 else:
                     session_monitor_mode = "ignored" if session_monitor.get("revocation_disabled") is True else "enabled"
             profile = status.get("chrome_profile")

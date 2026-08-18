@@ -810,6 +810,8 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
 
         def _session_count_badge(self, value: str) -> Text:
             if not value.isdigit():
+                if value == "error":
+                    return Text(value, style="bold #ff5555")
                 return Text(value, style="bold #ffb86c" if value == "unavailable" else "dim")
             count = int(value)
             color = "#ff5555" if count > 1 else "#8be9fd"

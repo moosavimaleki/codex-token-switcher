@@ -19,7 +19,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "proxy": None,
     "maintain_interval": DEFAULT_MAINTAIN_INTERVAL,
     "monitor_interval": DEFAULT_MONITOR_INTERVAL,
-    "session_monitor_enabled": False,
+    "session_monitor_enabled": True,
     "session_monitor_interval": DEFAULT_SESSION_MONITOR_INTERVAL,
     "chrome_root": None,
     "randomized_delay": DEFAULT_RANDOMIZED_DELAY,

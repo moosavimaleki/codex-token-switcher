@@ -37,6 +37,26 @@ def cache_chrome_profile(
     return None
 
 
+def cached_chrome_profile_account(paths: Paths, profile: ChromeProfile) -> str | None:
+    """Return the managed account previously associated with this Chrome profile."""
+    profile_root = str(profile.chrome_root) if profile.chrome_root else None
+    for name in list_accounts(paths):
+        path = status_path(paths, name)
+        if not path.exists():
+            continue
+        try:
+            cached = read_json(path).get("chrome_profile")
+        except ManagerError:
+            continue
+        if not isinstance(cached, dict) or cached.get("directory") != profile.directory:
+            continue
+        cached_root = cached.get("chrome_root")
+        if isinstance(cached_root, str) and profile_root and cached_root != profile_root:
+            continue
+        return name
+    return None
+
+
 def session_monitor_is_disabled(paths: Paths, account: str | None) -> bool:
     if not account:
         return False
@@ -57,6 +77,7 @@ def record_session_monitor_status(
     revocation_disabled: bool,
     current_device_protected: bool,
     outcome: str = "ok",
+    error: str | None = None,
 ) -> None:
     if not account:
         return
@@ -78,6 +99,7 @@ def record_session_monitor_status(
         "revocation_disabled": revocation_disabled,
         "current_device_protected": current_device_protected,
         "outcome": outcome,
+        "error": error,
     }
     existing["session_monitor"] = {
         "last_checked_at": check_entry["checked_at"],
@@ -89,6 +111,7 @@ def record_session_monitor_status(
         "revocation_disabled": revocation_disabled,
         "current_device_protected": current_device_protected,
         "outcome": outcome,
+        "error": error,
         "check_history": [check_entry, *previous_history[:2]],
     }
     atomic_write_json(path, existing)
@@ -105,9 +128,13 @@ def session_result_message(result: dict, *, dry_run: bool = False) -> str:
             "; session operations apply only to the active email above"
         )
     if result.get("error"):
-        return f"{profile}: email {email}; error {result['error']}{switch_summary}"
+        account = result.get("account")
+        account_summary = f"; account {account}" if account else ""
+        return f"{profile}: email {email}{account_summary}; error {result['error']}{switch_summary}"
     if result.get("not_signed_in"):
-        return f"{profile}: email {email}; ChatGPT session unavailable; skipped{switch_summary}"
+        account = result.get("account")
+        account_summary = f"; account {account}" if account else ""
+        return f"{profile}: email {email}{account_summary}; ChatGPT session unavailable; skipped{switch_summary}"
     account = result.get("account") or "unmanaged"
     devices = result.get("devices", 0)
     codex = result.get("codex_sessions", 0)
@@ -129,12 +156,12 @@ def monitor_sessions(paths: Paths, *, dry_run: bool = False) -> dict:
     with manager_lock(paths):
         for profile in profiles:
             email = None
-            mapped_account = None
+            mapped_account = cached_chrome_profile_account(paths, profile)
             switch_accounts = chatgpt_switch_accounts(profile)
             try:
                 cookies = load_chatgpt_cookies(profile)
                 email = chrome_account_email(cookies)
-                mapped_account = cache_chrome_profile(paths, email, profile, switch_accounts)
+                mapped_account = cache_chrome_profile(paths, email, profile, switch_accounts) or mapped_account
                 revocation_disabled = session_monitor_is_disabled(paths, mapped_account)
                 client = ChatGPTSessionClient(cookies, proxy_url=config.get("proxy"))
                 devices = client.devices()
@@ -200,10 +227,12 @@ def monitor_sessions(paths: Paths, *, dry_run: bool = False) -> dict:
                     revocation_disabled=session_monitor_is_disabled(paths, mapped_account),
                     current_device_protected=False,
                     outcome="unavailable",
+                    error="not signed in to ChatGPT",
                 )
                 result = {
                     "profile": profile.name,
                     "profile_label": profile.label,
+                    "account": mapped_account,
                     "email": email,
                     "switch_accounts": switch_accounts,
                     "not_signed_in": True,
@@ -212,9 +241,22 @@ def monitor_sessions(paths: Paths, *, dry_run: bool = False) -> dict:
                 write_log(paths, f"Chrome session monitor: {session_result_message(result, dry_run=dry_run)}")
             except ManagerError as exc:
                 failures += 1
+                record_session_monitor_status(
+                    paths,
+                    mapped_account,
+                    devices=None,
+                    codex_sessions=None,
+                    excess=0,
+                    revoked=0,
+                    revocation_disabled=session_monitor_is_disabled(paths, mapped_account),
+                    current_device_protected=False,
+                    outcome="error",
+                    error=str(exc),
+                )
                 result = {
                     "profile": profile.name,
                     "profile_label": profile.label,
+                    "account": mapped_account,
                     "email": email,
                     "switch_accounts": switch_accounts,
                     "error": str(exc),

@@ -9,7 +9,8 @@ from unittest import mock
 
 from codex_manager.chatgpt_sessions import ChromeProfile, ProfileNotSignedIn, chatgpt_switch_accounts, codex_sessions
 from codex_manager.commands.accounts import write_status
-from codex_manager.commands.sessions import monitor_sessions, record_session_monitor_status, session_result_message
+from codex_manager.commands.sessions import cached_chrome_profile_account, monitor_sessions, record_session_monitor_status, session_result_message
+from codex_manager.errors import ManagerError
 from codex_manager.paths import Paths, account_path, status_path
 from codex_manager.storage import atomic_write_json, read_json, save_state
 from codex_manager.textual_ui import account_rank_sort_key
@@ -149,6 +150,36 @@ class CodexSessionTests(unittest.TestCase):
         self.assertEqual("session alert", row["state"])
         self.assertIn("has not reported", row["reason"])
 
+    def test_plus_account_with_session_monitor_error_is_an_alert(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with mock.patch.dict(os.environ, {"CODEX_MANAGER_HOME": f"{tmpdir}/manager"}, clear=False):
+                paths = Paths()
+                atomic_write_json(account_path(paths, "plus"), {
+                    "tokens": {
+                        "refresh_token": "refresh-token",
+                        "id_token": {
+                            "email": "plus@example.com",
+                            "https://api.openai.com/auth": {"chatgpt_plan_type": "plus"},
+                        },
+                    },
+                })
+                atomic_write_json(paths.config_file, {
+                    "session_monitor_enabled": True,
+                    "session_monitor_interval": "10min",
+                })
+                atomic_write_json(status_path(paths, "plus"), {
+                    "session_monitor": {
+                        "outcome": "error",
+                        "error": "ChatGPT sessions API request failed: TimeoutError",
+                    },
+                })
+                save_state(paths, {"active": None})
+
+                row = describe_account(paths, "plus", None)
+
+        self.assertEqual("session alert", row["state"])
+        self.assertIn("TimeoutError", row["reason"])
+
     def test_account_check_preserves_chrome_profile_mapping(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             with mock.patch.dict(os.environ, {"CODEX_MANAGER_HOME": f"{tmpdir}/manager"}, clear=False):
@@ -271,6 +302,46 @@ class CodexSessionTests(unittest.TestCase):
         self.assertEqual("unavailable", status["outcome"])
         self.assertIsNone(status["codex_sessions"])
         self.assertEqual(1, len(status["check_history"]))
+
+    def test_monitor_records_network_failure_against_cached_profile_account(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with mock.patch.dict(os.environ, {"CODEX_MANAGER_HOME": f"{tmpdir}/manager"}, clear=False):
+                paths = Paths()
+                atomic_write_json(account_path(paths, "account"), {"tokens": {"id_token": {}}})
+                atomic_write_json(status_path(paths, "account"), {
+                    "chrome_profile": {"directory": "Profile 8", "chrome_root": None},
+                })
+                profile = ChromeProfile("google-chrome/Profile 8", paths.manager_home / "fake-Cookies", "Profile 8")
+                fake_client = mock.Mock()
+                fake_client.devices.side_effect = ManagerError("ChatGPT sessions API request failed: TimeoutError")
+                with (
+                    mock.patch("codex_manager.commands.sessions.discover_chrome_profiles", return_value=[profile]),
+                    mock.patch("codex_manager.commands.sessions.load_chatgpt_cookies", return_value=object()),
+                    mock.patch("codex_manager.commands.sessions.ChatGPTSessionClient", return_value=fake_client),
+                ):
+                    summary = monitor_sessions(paths)
+
+                status = read_json(status_path(paths, "account"))["session_monitor"]
+
+        self.assertEqual(1, summary["failures"])
+        self.assertEqual("account", summary["results"][0]["account"])
+        self.assertEqual("error", status["outcome"])
+        self.assertEqual("ChatGPT sessions API request failed: TimeoutError", status["error"])
+        self.assertIsNone(status["codex_sessions"])
+
+    def test_cached_chrome_profile_account_uses_matching_profile_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with mock.patch.dict(os.environ, {"CODEX_MANAGER_HOME": f"{tmpdir}/manager"}, clear=False):
+                paths = Paths()
+                atomic_write_json(account_path(paths, "account"), {"tokens": {"id_token": {}}})
+                atomic_write_json(status_path(paths, "account"), {
+                    "chrome_profile": {"directory": "Profile 8", "chrome_root": "/chrome"},
+                })
+                profile = ChromeProfile("google-chrome/Profile 8", paths.manager_home / "fake-Cookies", "Profile 8", chrome_root=Path("/chrome"))
+
+                account = cached_chrome_profile_account(paths, profile)
+
+        self.assertEqual("account", account)
 
     def test_dry_run_never_revokes(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

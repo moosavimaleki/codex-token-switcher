@@ -73,13 +73,15 @@ def build_parser() -> argparse.ArgumentParser:
     config = sub.add_parser(
         "config",
         help="interactive config wizard",
-        usage="codex-manager config [show|set ...]",
+        usage="codex-manager config [show|set ...|reset]",
         description="Run without a subcommand to open the interactive config wizard.",
     )
     config.set_defaults(func=cmd_config)
     config_sub = config.add_subparsers(dest="config_cmd")
     config_show = config_sub.add_parser("show", help="show config")
     config_show.set_defaults(func=cmd_config)
+    config_reset = config_sub.add_parser("reset", help="reset config to this release's defaults")
+    config_reset.set_defaults(func=cmd_config)
     config_set = config_sub.add_parser("set", help="update config")
     config_set.add_argument("--proxy", help="HTTP/HTTPS proxy URL, or 'none' to disable")
     config_set.add_argument("--interval", help="maintenance interval, for example 30m, 6h, or 1d")

@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 
 from .scheduler import apply_scheduler
-from ..config import ensure_config, redact_url, save_config
+from ..config import ensure_config, redact_url, reset_config, save_config
 from ..errors import ManagerError
 from ..paths import Paths
 from ..terminal import dim, section, style
@@ -87,6 +87,10 @@ def cmd_config(args) -> int:
 
     if args.config_cmd == "show":
         print_config(paths, ensure_config(paths))
+        return 0
+
+    if args.config_cmd == "reset":
+        print_config(paths, reset_config(paths))
         return 0
 
     updates = {}

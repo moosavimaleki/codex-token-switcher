@@ -139,6 +139,14 @@ def ensure_config(paths: Paths) -> dict[str, Any]:
     return config
 
 
+def reset_config(paths: Paths) -> dict[str, Any]:
+    """Replace the persisted config with the defaults from the current release."""
+    ensure_dirs(paths)
+    config = normalize_config(dict(DEFAULT_CONFIG))
+    atomic_write_json(paths.config_file, config)
+    return config
+
+
 def save_config(paths: Paths, updates: dict[str, Any]) -> dict[str, Any]:
     config = load_config(paths)
     config.update(updates)

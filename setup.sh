@@ -38,6 +38,7 @@ PYTHONPATH="$INSTALL_DIR:\${PYTHONPATH:-}" exec "$PYTHON_BIN" "$INSTALL_DIR/code
 EOF
 chmod 0755 "$BIN_DIR/codex-manager"
 
+"$BIN_DIR/codex-manager" config reset >/dev/null
 TIMER_STATUS="$("$BIN_DIR/codex-manager" scheduler apply --bin "$BIN_DIR/codex-manager" --quiet)"
 
 cat <<EOF

@@ -204,6 +204,8 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
         _device_login_code: DeviceLoginCode | None = None
         _check_worker = None
         _check_requested_after_current = False
+        _activation_worker = None
+        _activation_target: str | None = None
         _device_login_worker_ref = None
         _device_login_cancel_event: threading.Event | None = None
         _add_method = "device"
@@ -707,12 +709,15 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
             if active_tab_before and self._active_tab() != active_tab_before:
                 self.query_one(TabbedContent).active = active_tab_before
                 self._focus_tab_content(active_tab_before)
-            if rerender_chart:
+            # Background check/session services update several files in quick
+            # succession. Avoid rebuilding the plot while the user is working
+            # in Accounts; chart rendering is comparatively expensive.
+            if rerender_chart and active_tab_before == "charts":
                 self._render_chart_if_possible()
             self._last_data_signature = tracked_data_signature(paths)
 
         def _poll_for_data_changes(self) -> None:
-            if self._check_worker is not None:
+            if self._manager_operation_in_progress():
                 return
             current_signature = tracked_data_signature(paths)
             if current_signature != self._last_data_signature:
@@ -873,7 +878,9 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
         def _update_account_maintenance_status(self) -> None:
             interval = str(ensure_config(paths).get("monitor_interval"))
             latest_refresh_raw = latest_account_refresh(paths)
-            if self._check_worker is not None:
+            if self._activation_worker is not None:
+                status_text = f"Last refresh: switching to {self._activation_target or 'account'}... | monitor {interval}"
+            elif self._check_worker is not None:
                 status_text = f"Last refresh: checking now | monitor {interval}"
             elif latest_refresh_raw:
                 refreshed_at = parse_datetime(latest_refresh_raw)
@@ -894,9 +901,13 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
             has_accounts = bool(self._account_names)
             has_selection = isinstance(self._selected_account_name, str) and self._selected_account_name in self._account_names
             selected_state = self._selected_account_state() if has_selection else None
-            self.query_one("#check-all", Button).disabled = (not has_accounts) or (self._check_worker is not None)
-            self.query_one("#activate", Button).disabled = not has_selection or selected_state == "needs_login"
-            can_relogin = has_selection and selected_state == "needs_login"
+            account_operation_busy = self._check_worker is not None or self._activation_worker is not None
+            self.query_one("#check-all", Button).disabled = (not has_accounts) or account_operation_busy
+            self.query_one("#activate", Button).disabled = (
+                not has_selection or selected_state == "needs_login" or account_operation_busy
+            )
+            self.query_one("#chart-activate", Button).disabled = account_operation_busy
+            can_relogin = has_selection and selected_state == "needs_login" and not account_operation_busy
             relogin_button = self.query_one("#relogin", Button)
             relogin_button.disabled = not can_relogin
             if can_relogin:
@@ -909,14 +920,20 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
             can_toggle_sessions = self._selected_chrome_profile() is not None
             session_button.disabled = not can_toggle_sessions
             session_button.label = "Monitor Sessions" if self._selected_session_monitor_disabled() else "Ignore Sessions"
-            self.query_one("#rename", Button).disabled = not has_selection
-            self.query_one("#delete", Button).disabled = not has_selection
+            self.query_one("#rename", Button).disabled = not has_selection or account_operation_busy
+            self.query_one("#delete", Button).disabled = not has_selection or account_operation_busy
             self._update_account_maintenance_status()
+
+        def _manager_operation_in_progress(self) -> bool:
+            return self._check_worker is not None or self._activation_worker is not None
 
         def _selected_account_state(self) -> str | None:
             name = self._selected_account()
             if not name:
                 return None
+            return self._account_state(name)
+
+        def _account_state(self, name: str) -> str | None:
             active = load_state(paths).get("active")
             return describe_account(paths, name, active).get("state")
 
@@ -1168,29 +1185,40 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
             if not name:
                 self._set_banner("Select an account first.")
                 return
-            if self._selected_account_state() == "needs_login":
+            self._activate_account(name, source="Accounts")
+
+        def _activate_account(self, name: str, *, source: str) -> None:
+            if self._activation_worker is not None:
+                self._set_banner(f"Already switching to {self._activation_target or 'another account'}.")
+                return
+            if self._check_worker is not None:
+                self._set_banner("Account check is running; wait for it to finish before switching.")
+                return
+            if self._account_state(name) == "needs_login":
                 self._set_banner(f"{name} needs relogin before activation.")
                 return
-            activate(paths, name)
-            self._refresh_dashboard_data(rerender_chart=False)
-            self._set_banner(f"Primary account switched to {name}. Restart Codex if you need the new auth picked up immediately.")
+            self._activation_target = name
+            self._set_banner(f"Switching primary account to {name} from {source}...")
+            self._update_account_action_state()
+            self._activation_worker = self._activate_account_worker(name)
 
         def _activate_chart_account(self) -> None:
             name = self._selected_chart_account()
             if not name:
                 self._set_banner("Select a chart account first.")
                 return
-            activate(paths, name)
-            self._refresh_dashboard_data(rerender_chart=False)
-            self.query_one("#chart-account", Select).value = name
-            self._set_banner(f"Primary account switched to {name} from Charts.")
-            self._render_chart_if_possible()
+            self._activate_account(name, source="Charts")
 
-        @work(thread=True, exclusive=True, exit_on_error=False)
+        @work(thread=True, group="account-check", exclusive=True, exit_on_error=False)
         def _check_accounts_worker(self) -> dict:
             return run_check_command(paths)
 
-        @work(thread=True, exclusive=True, exit_on_error=False)
+        @work(thread=True, group="account-activation", exclusive=True, exit_on_error=False)
+        def _activate_account_worker(self, name: str) -> str:
+            activate(paths, name)
+            return name
+
+        @work(thread=True, group="device-login", exclusive=True, exit_on_error=False)
         def _device_login_worker(self, name: str, replace_existing: bool = False, expected_email: str | None = None):
             return login_with_device_code(
                 paths,
@@ -1219,8 +1247,33 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
                 return
             if event.worker is self._check_worker:
                 self._finish_check_worker(event)
+            elif event.worker is self._activation_worker:
+                self._finish_activation_worker(event)
             elif event.worker is self._device_login_worker_ref:
                 self._finish_device_login_worker(event)
+
+        def _finish_activation_worker(self, event: Worker.StateChanged) -> None:
+            name = self._activation_target
+            self._activation_worker = None
+            self._activation_target = None
+
+            if event.state == WorkerState.SUCCESS:
+                activated = event.worker.result
+                self._refresh_dashboard_data(rerender_chart=False)
+                if isinstance(activated, str):
+                    self._select_account_row(activated)
+                    self.query_one("#chart-account", Select).value = activated
+                self._set_banner(
+                    f"Primary account switched to {activated or name}. Restart Codex if you need the new auth picked up immediately."
+                )
+            elif event.state == WorkerState.ERROR:
+                error = event.worker.error
+                self._set_banner(str(error) if error else f"Could not switch to {name or 'the selected account'}.")
+            else:
+                self._set_banner("Account switch cancelled.")
+
+            self._update_account_action_state()
+            self._focus_account_table()
 
         def _finish_check_worker(self, event: Worker.StateChanged) -> None:
             button = self.query_one("#check-all", Button)

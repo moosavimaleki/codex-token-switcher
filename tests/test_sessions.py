@@ -126,6 +126,33 @@ class CodexSessionTests(unittest.TestCase):
 
         self.assertEqual("free", row["plan"])
 
+    def test_describe_account_prefers_current_plan_from_rate_limits(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with mock.patch.dict(os.environ, {"CODEX_MANAGER_HOME": f"{tmpdir}/manager"}, clear=False):
+                paths = Paths()
+                atomic_write_json(account_path(paths, "downgraded"), {
+                    "tokens": {
+                        "refresh_token": "refresh-token",
+                        "id_token": {
+                            "email": "downgraded@example.com",
+                            "https://api.openai.com/auth": {"chatgpt_plan_type": "plus"},
+                        },
+                    },
+                })
+                atomic_write_json(status_path(paths, "downgraded"), {
+                    "rate_limits": {"plan_type": "free"},
+                })
+                atomic_write_json(paths.config_file, {
+                    "session_monitor_enabled": True,
+                    "session_monitor_interval": "10min",
+                })
+                save_state(paths, {"active": None})
+
+                row = describe_account(paths, "downgraded", None)
+
+        self.assertEqual("free", row["plan"])
+        self.assertNotEqual("session alert", row["state"])
+
     def test_plus_account_without_session_monitor_is_an_alert(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             with mock.patch.dict(os.environ, {"CODEX_MANAGER_HOME": f"{tmpdir}/manager"}, clear=False):

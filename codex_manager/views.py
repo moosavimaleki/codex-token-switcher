@@ -13,6 +13,17 @@ from .terminal import bad, dim, info, ok, style, warn
 from .time_utils import human_delta, parse_datetime, utcnow
 
 
+def effective_plan(token_plan: object, rate_limits: object) -> str:
+    """Prefer the server-reported plan over the plan embedded in an old token."""
+    if isinstance(rate_limits, dict):
+        current_plan = rate_limits.get("plan_type")
+        if isinstance(current_plan, str) and current_plan.strip():
+            return current_plan.strip().lower()
+    if isinstance(token_plan, str) and token_plan.strip():
+        return token_plan.strip().lower()
+    return "unknown"
+
+
 def session_monitor_alert_reason(paths: Paths, plan: str, status: dict) -> str | None:
     """Return a visible alert when a Plus account is not being monitored."""
     if plan != "plus" or status.get("session_monitor_disabled") is True:
@@ -90,7 +101,7 @@ def describe_account(paths: Paths, name: str, active: str | None) -> dict[str, s
     try:
         auth = read_auth(paths.accounts_dir / f"{name}.json")
         meta = account_metadata(auth)
-        plan = str(meta.get("plan") or "unknown").lower()
+        plan = effective_plan(meta.get("plan"), status.get("rate_limits"))
         exp = access_expiry(auth)
         need, reason = should_refresh(auth)
         state = "active" if name == active else "refresh soon" if need else "ok"

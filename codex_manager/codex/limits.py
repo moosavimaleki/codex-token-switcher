@@ -108,13 +108,6 @@ def _snapshot(
     }
 
 
-def _is_weekly_window(window: dict[str, Any] | None) -> bool:
-    if not isinstance(window, dict):
-        return False
-    minutes = window.get("window_minutes")
-    return isinstance(minutes, int) and minutes >= 6 * 24 * 60
-
-
 def normalize_rate_limits(payload: dict[str, Any]) -> dict[str, Any]:
     snapshots = []
     credits = payload.get("credits")
@@ -177,13 +170,20 @@ def fetch_rate_limits(auth: dict[str, Any], proxy_url: str | None = None) -> dic
     return normalize_rate_limits(payload)
 
 
-def _window_label(window: dict[str, Any] | None, fallback: str) -> str | None:
+def _window_label(
+    window: dict[str, Any] | None,
+    fallback: str,
+    *,
+    plan_type: str | None = None,
+) -> str | None:
     if not window:
         return None
     minutes = window.get("window_minutes")
     if isinstance(minutes, int) and minutes > 0:
-        # The current Codex UI exposes one long-running "Weekly limit" even
-        # when the backend reports an implementation-specific duration.
+        # Free accounts use a 30-day budget; Plus accounts use the long weekly
+        # window. Do not call a Free account's month-long reset "weekly".
+        if plan_type == "free" and minutes >= 27 * 24 * 60:
+            return "monthly"
         if minutes >= 6 * 24 * 60:
             return "weekly"
         if minutes % 60 == 0:
@@ -192,10 +192,16 @@ def _window_label(window: dict[str, Any] | None, fallback: str) -> str | None:
     return fallback
 
 
-def _window_text(window: dict[str, Any] | None, fallback: str, compact: bool = False) -> str | None:
+def _window_text(
+    window: dict[str, Any] | None,
+    fallback: str,
+    *,
+    plan_type: str | None = None,
+    compact: bool = False,
+) -> str | None:
     if not window:
         return None
-    label = _window_label(window, fallback)
+    label = _window_label(window, fallback, plan_type=plan_type)
     remaining = window.get("remaining_percent")
     if not isinstance(remaining, (int, float)):
         return None
@@ -266,11 +272,14 @@ def format_rate_limit_resets(rate_limits: dict[str, Any] | None, now: dt.datetim
             fetched_at = None
     current = now or utcnow()
     lines = []
-    for prefix, window, fallback in (("Weekly reset", _weekly_window(codex), "weekly"),):
-        label = _window_label(window, fallback)
+    plan_type = codex.get("plan_type") if isinstance(codex.get("plan_type"), str) else rate_limits.get("plan_type")
+    for window, fallback in ((_budget_window(codex), "weekly"),):
+        label = _window_label(window, fallback, plan_type=plan_type)
         reset_at = _window_reset_at(window, fetched_at)
         if label and reset_at is not None:
-            lines.append(f"{prefix}: {_reset_countdown_label(reset_at, current)} left | {_calendar_label(reset_at, current)}")
+            lines.append(
+                f"{label.title()} reset: {_reset_countdown_label(reset_at, current)} left | {_calendar_label(reset_at, current)}"
+            )
     return lines
 
 
@@ -295,17 +304,18 @@ def describe_rate_limit_windows(rate_limits: dict[str, Any] | None, now: dt.date
             fetched_at = None
     current = now or utcnow()
     windows: list[dict[str, Any]] = []
-    for key, fallback, window in (("weekly", "weekly", _weekly_window(codex)),):
+    plan_type = codex.get("plan_type") if isinstance(codex.get("plan_type"), str) else rate_limits.get("plan_type")
+    for fallback, window in (("weekly", _budget_window(codex)),):
         if not isinstance(window, dict):
             continue
-        label = _window_label(window, fallback)
+        label = _window_label(window, fallback, plan_type=plan_type)
         remaining = window.get("remaining_percent")
         used = window.get("used_percent")
         reset_at = _window_reset_at(window, fetched_at)
         reached = bool(codex.get("limit_reached")) or (isinstance(remaining, (int, float)) and float(remaining) <= 0.0)
         windows.append(
             {
-                "key": key,
+                "key": label or fallback,
                 "label": label or fallback,
                 "remaining_percent": float(remaining) if isinstance(remaining, (int, float)) else None,
                 "used_percent": float(used) if isinstance(used, (int, float)) else None,
@@ -336,7 +346,12 @@ def format_rate_limits_summary(rate_limits: dict[str, Any] | None, compact: bool
     parts = [
         text
         for text in (
-            _window_text(_weekly_window(codex), "weekly", compact=compact),
+            _window_text(
+                _budget_window(codex),
+                "weekly",
+                plan_type=codex.get("plan_type") if isinstance(codex.get("plan_type"), str) else rate_limits.get("plan_type"),
+                compact=compact,
+            ),
         )
         if text
     ]
@@ -352,7 +367,7 @@ def format_rate_limits_summary(rate_limits: dict[str, Any] | None, compact: bool
     return "; ".join(parts) + stale if parts else "limits unavailable"
 
 
-def _weekly_window(snapshot: dict[str, Any]) -> dict[str, Any] | None:
+def _budget_window(snapshot: dict[str, Any]) -> dict[str, Any] | None:
     secondary = snapshot.get("secondary")
     if isinstance(secondary, dict):
         return secondary

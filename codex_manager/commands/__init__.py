@@ -13,6 +13,7 @@ from .accounts import (
     write_status,
 )
 from .chart import cmd_chart
+from .best import cmd_best
 from .compact import (
     checked_out_app_server_auth,
     cmd_compact,
@@ -46,6 +47,7 @@ __all__ = [
     "atomic_copy_auth",
     "checked_out_app_server_auth",
     "cmd_add",
+    "cmd_best",
     "cmd_chart",
     "cmd_check",
     "cmd_compact",

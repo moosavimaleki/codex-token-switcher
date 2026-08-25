@@ -13,15 +13,15 @@ from .terminal import bad, dim, info, ok, style, warn
 from .time_utils import human_delta, parse_datetime, utcnow
 
 
-def effective_plan(token_plan: object, rate_limits: object) -> str:
-    """Prefer the server-reported plan over the plan embedded in an old token."""
+def effective_plan(token_plan: object, rate_limits: object, status_state: object = None) -> str:
+    """Return only a current server plan, never a stale plan for a failed login."""
     if isinstance(rate_limits, dict):
-        current_plan = rate_limits.get("plan_type")
-        if isinstance(current_plan, str) and current_plan.strip():
-            return current_plan.strip().lower()
-    if isinstance(token_plan, str) and token_plan.strip():
-        return token_plan.strip().lower()
-    return "unknown"
+        plan = rate_limits.get("plan_type")
+        if isinstance(plan, str) and plan.strip():
+            return plan.strip().lower()
+    if status_state == "needs_login":
+        return "unknown"
+    return token_plan.strip().lower() if isinstance(token_plan, str) and token_plan.strip() else "unknown"
 
 
 def session_monitor_alert_reason(paths: Paths, plan: str, status: dict) -> str | None:
@@ -37,6 +37,9 @@ def session_monitor_alert_reason(paths: Paths, plan: str, status: dict) -> str |
         return "session monitor has not reported for this Plus account"
     if monitor.get("outcome") == "unavailable":
         return "ChatGPT browser session is unavailable; Codex sessions cannot be monitored"
+    if monitor.get("outcome") == "partial":
+        detail = monitor.get("error")
+        return f"ChatGPT browser sign-in is incomplete: {detail}" if isinstance(detail, str) and detail else "ChatGPT browser sign-in is incomplete"
     if monitor.get("outcome") == "error":
         detail = monitor.get("error")
         if isinstance(detail, str) and detail:
@@ -62,6 +65,7 @@ def describe_account(paths: Paths, name: str, active: str | None) -> dict[str, s
     revoked_total = "0"
     session_monitor_mode = "not checked yet"
     status: dict = {}
+    chrome_profile_data: dict | None = None
     sp = status_path(paths, name)
     if sp.exists():
         try:
@@ -77,31 +81,42 @@ def describe_account(paths: Paths, name: str, active: str | None) -> dict[str, s
                     codex_sessions = str(session_count)
                 elif session_monitor.get("outcome") == "unavailable":
                     codex_sessions = "unavailable"
+                elif session_monitor.get("outcome") == "partial":
+                    codex_sessions = "partial"
                 elif session_monitor.get("outcome") == "error":
                     codex_sessions = "error"
                 if isinstance(revoke_count, int) and revoke_count >= 0:
                     revoked_total = str(revoke_count)
                 if session_monitor.get("outcome") == "unavailable":
                     session_monitor_mode = "unavailable"
+                elif session_monitor.get("outcome") == "partial":
+                    session_monitor_mode = "partial"
                 elif session_monitor.get("outcome") == "error":
                     session_monitor_mode = "error"
                 else:
                     session_monitor_mode = "ignored" if session_monitor.get("revocation_disabled") is True else "enabled"
             profile = status.get("chrome_profile")
             if isinstance(profile, dict):
-                directory = profile.get("directory")
-                display_name = profile.get("display_name")
-                if isinstance(directory, str) and isinstance(display_name, str):
-                    chrome_profile = f"{display_name} ({directory})"
-                    switch_accounts = profile.get("chatgpt_accounts")
-                    if isinstance(switch_accounts, list) and len(switch_accounts) > 1:
-                        chrome_profile += f" [{len(switch_accounts)} ChatGPT]"
+                chrome_profile_data = profile
         except ManagerError:
             limits = "limits unknown"
     try:
         auth = read_auth(paths.accounts_dir / f"{name}.json")
         meta = account_metadata(auth)
-        plan = effective_plan(meta.get("plan"), status.get("rate_limits"))
+        plan = effective_plan(meta.get("plan"), status.get("rate_limits"), status_state)
+        if isinstance(chrome_profile_data, dict):
+            directory = chrome_profile_data.get("directory")
+            display_name = chrome_profile_data.get("display_name")
+            verified_email = chrome_profile_data.get("active_email")
+            account_email = meta.get("email")
+            if (
+                isinstance(directory, str)
+                and isinstance(display_name, str)
+                and isinstance(verified_email, str)
+                and isinstance(account_email, str)
+                and verified_email.lower() == account_email.lower()
+            ):
+                chrome_profile = f"{display_name} ({directory})"
         exp = access_expiry(auth)
         need, reason = should_refresh(auth)
         state = "active" if name == active else "refresh soon" if need else "ok"

@@ -5,6 +5,7 @@ import sys
 
 from .commands import (
     cmd_add,
+    cmd_best,
     cmd_chart,
     cmd_check,
     cmd_compact,
@@ -31,6 +32,9 @@ def build_parser() -> argparse.ArgumentParser:
     ls = sub.add_parser("ls", help="interactive account selector")
     ls.add_argument("--plain", action="store_true", help="print non-interactive list")
     ls.set_defaults(func=cmd_ls)
+
+    best = sub.add_parser("best", help="activate the highest-ranked account with cached quota remaining")
+    best.set_defaults(func=cmd_best)
 
     maintain = sub.add_parser("maintain", help="internal: sync active and refresh inactive accounts")
     maintain.add_argument("--quiet", action="store_true")

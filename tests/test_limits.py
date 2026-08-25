@@ -3,7 +3,12 @@ from __future__ import annotations
 import datetime as dt
 import unittest
 
-from codex_manager.codex.limits import describe_rate_limit_windows, format_rate_limit_resets, normalize_rate_limits
+from codex_manager.codex.limits import (
+    describe_rate_limit_windows,
+    format_rate_limit_resets,
+    format_rate_limits_summary,
+    normalize_rate_limits,
+)
 
 
 class RateLimitResetFormattingTests(unittest.TestCase):
@@ -59,6 +64,33 @@ class RateLimitResetFormattingTests(unittest.TestCase):
         self.assertTrue(windows[0]["reached"])
         self.assertTrue(str(windows[0]["reset_text"]).startswith("today at "))
         self.assertEqual("2h 0m", windows[0]["reset_in_text"])
+
+    def test_free_monthly_budget_is_not_labeled_weekly(self) -> None:
+        now = dt.datetime(2026, 6, 12, 9, 0, tzinfo=dt.timezone.utc)
+        rate_limits = {
+            "fetched_at": "2026-06-12T09:00:00Z",
+            "plan_type": "free",
+            "snapshots": [
+                {
+                    "limit_id": "codex",
+                    "plan_type": "free",
+                    "secondary": {
+                        "remaining_percent": 72.0,
+                        "used_percent": 28.0,
+                        "window_minutes": 30 * 24 * 60,
+                        "reset_after_seconds": 23 * 24 * 3600,
+                    },
+                }
+            ],
+        }
+
+        lines = format_rate_limit_resets(rate_limits, now=now)
+        windows = describe_rate_limit_windows(rate_limits, now=now)
+
+        self.assertTrue(lines[0].startswith("Monthly reset: 23d 0h left |"))
+        self.assertEqual("monthly", windows[0]["key"])
+        self.assertEqual("monthly", windows[0]["label"])
+        self.assertTrue(format_rate_limits_summary(rate_limits, compact=True).startswith("monthly 72%"))
 
 
 if __name__ == "__main__":

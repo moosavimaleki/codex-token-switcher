@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import shutil
 import tempfile
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -20,6 +21,8 @@ from .errors import ManagerError
 
 CHATGPT_HOST = "chatgpt.com"
 SESSION_URL = f"https://{CHATGPT_HOST}/api/auth/session"
+ACCOUNT_CHECK_URL = f"https://{CHATGPT_HOST}/backend-api/accounts/check/v4-2023-04-27"
+ACCOUNT_URL = f"https://{CHATGPT_HOST}/backend-api/me"
 DEVICES_URL = f"https://{CHATGPT_HOST}/backend-api/accounts/sessions"
 REVOKE_URL = f"{DEVICES_URL}/revoke"
 ACCOUNT_SWITCH_STORAGE_KEY = b"oai/apps/accountSwitchSessions"
@@ -40,6 +43,12 @@ class ChromeProfile:
 
 
 class ProfileNotSignedIn(ManagerError):
+    pass
+
+
+class ProfilePartiallySignedIn(ManagerError):
+    """ChatGPT cookies exist, but they cannot establish an authenticated account."""
+
     pass
 
 
@@ -116,12 +125,16 @@ def load_chatgpt_cookies(profile: ChromeProfile) -> CookieJar:
         shutil.copy2(profile.cookie_db, copied_db)
         source_jar = _extract_chrome_cookies("chrome", str(copied_profile), None, _SilentCookieLogger())
 
+    now = time.time()
     jar = CookieJar()
     for cookie in source_jar:
-        if cookie.domain.lstrip(".").endswith(CHATGPT_HOST):
+        if (
+            cookie.domain.lstrip(".").lower() == CHATGPT_HOST
+            and (cookie.expires is None or cookie.expires > now)
+        ):
             jar.set_cookie(cookie)
     if not list(jar):
-        raise ManagerError("no ChatGPT cookies found in this Chrome profile")
+        raise ProfileNotSignedIn("no unexpired ChatGPT cookies found in this Chrome profile")
     return jar
 
 
@@ -247,12 +260,47 @@ class ChatGPTSessionClient:
             payload = self._request(SESSION_URL, self._browser_headers("/api/auth/session"))
         except ManagerError as exc:
             if "HTTP 401" in str(exc):
-                raise ProfileNotSignedIn("not signed in to ChatGPT") from exc
+                raise ProfilePartiallySignedIn("session endpoint rejected the stored cookies") from exc
             raise
         token = payload.get("accessToken") or payload.get("access_token")
         if not isinstance(token, str) or not token:
-            raise ProfileNotSignedIn("not signed in to ChatGPT")
+            raise ProfilePartiallySignedIn("session access token is missing")
         return token
+
+    def authenticated_account_email(self) -> str:
+        """Validate a complete ChatGPT login and return its server-confirmed email.
+
+        A 200 response from ``/api/auth/session`` alone is insufficient: a
+        partially completed login can return an access token while lacking a
+        selected account or a complete authenticated ``/backend-api/me`` body.
+        """
+        token = self._access_token()
+        try:
+            accounts = self._request(
+                ACCOUNT_CHECK_URL,
+                self._browser_headers("/backend-api/accounts/check/v4-2023-04-27"),
+            )
+        except ManagerError as exc:
+            if "HTTP 401" in str(exc):
+                raise ProfilePartiallySignedIn("account selection rejected the stored cookies") from exc
+            raise
+        account_id = _selected_account_id(accounts)
+        if account_id is None:
+            raise ProfilePartiallySignedIn("account selection is missing")
+
+        headers = self._browser_headers("/backend-api/me")
+        headers["Authorization"] = f"Bearer {token}"
+        headers["ChatGPT-Account-Id"] = account_id
+        try:
+            account = self._request(ACCOUNT_URL, headers)
+        except ManagerError as exc:
+            if "HTTP 401" in str(exc):
+                raise ProfilePartiallySignedIn("authenticated account request was rejected") from exc
+            raise
+        email = _authenticated_account_email(account)
+        if email is None:
+            raise ProfilePartiallySignedIn("account response is anonymous or incomplete")
+        return email
 
     def devices(self) -> list[dict[str, Any]]:
         token = self._access_token()
@@ -289,6 +337,33 @@ def codex_sessions(devices: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if "Codex" in client_names:
             selected.append(device)
     return sorted(selected, key=lambda item: int(item.get("last_signed_in_timestamp_second") or 0))
+
+
+def _selected_account_id(payload: dict[str, Any]) -> str | None:
+    ordering = payload.get("account_ordering")
+    if not isinstance(ordering, list) or not ordering:
+        return None
+    account_id = ordering[0]
+    return account_id if isinstance(account_id, str) and account_id else None
+
+
+def _authenticated_account_email(payload: dict[str, Any]) -> str | None:
+    """Reject the smaller anonymous account document returned by ChatGPT."""
+    required = ("id", "email", "client_id")
+    if not all(isinstance(payload.get(key), str) and payload[key] for key in required):
+        return None
+    organizations = payload.get("orgs")
+    if not isinstance(organizations, dict):
+        return None
+    data = organizations.get("data")
+    if not isinstance(data, list) or not any(
+        isinstance(organization, dict)
+        and isinstance(organization.get("id"), str)
+        and organization["id"]
+        for organization in data
+    ):
+        return None
+    return str(payload["email"]).strip().lower()
 
 
 def session_time(device: dict[str, Any]) -> str:

@@ -7,9 +7,11 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from codex_manager.chatgpt_sessions import ChromeProfile, ProfileNotSignedIn, chatgpt_switch_accounts, codex_sessions
+from http.cookiejar import CookieJar
+
+from codex_manager.chatgpt_sessions import ChatGPTSessionClient, ChromeProfile, ProfileNotSignedIn, ProfilePartiallySignedIn, chatgpt_switch_accounts, codex_sessions
 from codex_manager.commands.accounts import write_status
-from codex_manager.commands.sessions import cached_chrome_profile_account, monitor_sessions, record_session_monitor_status, session_result_message
+from codex_manager.commands.sessions import cache_chrome_profile, cached_chrome_profile_account, monitor_sessions, record_session_monitor_status, scan_chrome_profiles, session_result_message
 from codex_manager.errors import ManagerError
 from codex_manager.paths import Paths, account_path, status_path
 from codex_manager.storage import atomic_write_json, read_json, save_state
@@ -28,6 +30,51 @@ def device(*, client_name: str, platform: str, timestamp: int, session_id: str, 
 
 
 class CodexSessionTests(unittest.TestCase):
+    def test_authenticated_account_email_requires_complete_account_data(self) -> None:
+        client = ChatGPTSessionClient(CookieJar())
+        with mock.patch.object(client, "_request", side_effect=[
+            {"accessToken": "token"},
+            {"account_ordering": ["account-id"]},
+            {
+                "id": "user-id",
+                "email": "active@example.com",
+                "client_id": "client-id",
+                "orgs": {"data": [{"id": "org-id"}]},
+            },
+        ]):
+            email = client.authenticated_account_email()
+
+        self.assertEqual("active@example.com", email)
+
+    def test_authenticated_account_email_rejects_partial_sign_in(self) -> None:
+        client = ChatGPTSessionClient(CookieJar())
+        with mock.patch.object(client, "_request", side_effect=[
+            {"accessToken": "token"},
+            {"account_ordering": []},
+        ]):
+            with self.assertRaisesRegex(ProfilePartiallySignedIn, "account selection is missing"):
+                client.authenticated_account_email()
+
+    def test_chrome_profile_scan_marks_cookie_without_complete_login_as_partial(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with mock.patch.dict(os.environ, {"CODEX_MANAGER_HOME": f"{tmpdir}/manager"}, clear=False):
+                paths = Paths()
+                profile = ChromeProfile("google-chrome/Profile 2", paths.manager_home / "fake-Cookies", "Profile 2", "Partial", Path("/chrome"))
+                client = mock.Mock()
+                client.authenticated_account_email.side_effect = ProfilePartiallySignedIn("account selection is missing")
+                with (
+                    mock.patch("codex_manager.commands.sessions.discover_chrome_profiles", return_value=[profile]),
+                    mock.patch("codex_manager.commands.sessions.chatgpt_switch_accounts", return_value=["saved@example.com"]),
+                    mock.patch("codex_manager.commands.sessions.load_chatgpt_cookies", return_value=CookieJar()),
+                    mock.patch("codex_manager.commands.sessions.chrome_account_email", return_value="cookie@example.com"),
+                    mock.patch("codex_manager.commands.sessions.ChatGPTSessionClient", return_value=client),
+                ):
+                    results = scan_chrome_profiles(paths)
+
+        self.assertEqual("partial", results[0]["outcome"])
+        self.assertEqual("cookie@example.com", results[0]["cookie_email"])
+        self.assertEqual("account selection is missing", results[0]["reason"])
+
     def test_free_accounts_sort_after_paid_accounts(self) -> None:
         ranked = sorted(
             [("free", 100.0, "free"), ("plus", 1.0, "plus")],
@@ -126,32 +173,51 @@ class CodexSessionTests(unittest.TestCase):
 
         self.assertEqual("free", row["plan"])
 
-    def test_describe_account_prefers_current_plan_from_rate_limits(self) -> None:
+    def test_needs_login_account_does_not_show_stale_token_plan_or_chrome_mapping(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             with mock.patch.dict(os.environ, {"CODEX_MANAGER_HOME": f"{tmpdir}/manager"}, clear=False):
                 paths = Paths()
-                atomic_write_json(account_path(paths, "downgraded"), {
+                atomic_write_json(account_path(paths, "stale"), {
                     "tokens": {
                         "refresh_token": "refresh-token",
                         "id_token": {
-                            "email": "downgraded@example.com",
+                            "email": "stale@example.com",
                             "https://api.openai.com/auth": {"chatgpt_plan_type": "plus"},
                         },
                     },
                 })
-                atomic_write_json(status_path(paths, "downgraded"), {
-                    "rate_limits": {"plan_type": "free"},
-                })
-                atomic_write_json(paths.config_file, {
-                    "session_monitor_enabled": True,
-                    "session_monitor_interval": "10min",
+                atomic_write_json(status_path(paths, "stale"), {
+                    "state": "needs_login",
+                    "chrome_profile": {"directory": "Default", "display_name": "Default"},
                 })
                 save_state(paths, {"active": None})
 
-                row = describe_account(paths, "downgraded", None)
+                row = describe_account(paths, "stale", None)
 
-        self.assertEqual("free", row["plan"])
-        self.assertNotEqual("session alert", row["state"])
+        self.assertEqual("unknown", row["plan"])
+        self.assertEqual("-", row["chrome_profile"])
+
+    def test_verified_profile_mapping_removes_former_account_mapping(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with mock.patch.dict(os.environ, {"CODEX_MANAGER_HOME": f"{tmpdir}/manager"}, clear=False):
+                paths = Paths()
+                for name, email in (("former", "former@example.com"), ("active", "active@example.com")):
+                    atomic_write_json(account_path(paths, name), {
+                        "tokens": {"refresh_token": "refresh-token", "id_token": {"email": email}},
+                    })
+                atomic_write_json(status_path(paths, "former"), {
+                    "chrome_profile": {"directory": "Default", "chrome_root": "/chrome"},
+                })
+                profile = ChromeProfile("google-chrome/Default", paths.manager_home / "Cookies", "Default", "Default", Path("/chrome"))
+
+                mapped = cache_chrome_profile(paths, "active@example.com", profile, ["active@example.com"])
+
+                former = read_json(status_path(paths, "former"))
+                active = read_json(status_path(paths, "active"))
+
+        self.assertEqual("active", mapped)
+        self.assertNotIn("chrome_profile", former)
+        self.assertEqual("active@example.com", active["chrome_profile"]["active_email"])
 
     def test_plus_account_without_session_monitor_is_an_alert(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

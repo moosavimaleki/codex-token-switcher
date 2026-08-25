@@ -39,6 +39,11 @@ class _Window:
     period: dt.timedelta
 
 
+def account_rank_sort_key(plan: str, score: float, name: str) -> tuple[bool, float, str]:
+    """Keep Free accounts below paid accounts while preserving recommendation rank."""
+    return (plan == "free", -score, name.lower())
+
+
 def account_recommendations(
     paths: Paths,
     names: list[str],

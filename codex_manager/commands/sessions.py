@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from ..auth import account_metadata, read_auth
-from ..chatgpt_sessions import ChatGPTSessionClient, ChromeProfile, ProfileNotSignedIn, chatgpt_switch_accounts, chrome_account_email, codex_sessions, discover_chrome_profiles, load_chatgpt_cookies, session_time
+from ..chatgpt_sessions import ChatGPTSessionClient, ChromeProfile, ProfileNotSignedIn, ProfilePartiallySignedIn, chatgpt_switch_accounts, chrome_account_email, codex_sessions, discover_chrome_profiles, load_chatgpt_cookies, session_time
 from ..config import ensure_config
 from ..errors import ManagerError
 from ..paths import Paths, account_path, list_accounts, status_path
@@ -17,19 +17,42 @@ def cache_chrome_profile(
 ) -> str | None:
     if not email:
         return None
+    normalized_email = email.lower()
+    profile_root = str(profile.chrome_root) if profile.chrome_root else None
     for name in list_accounts(paths):
         try:
             stored_email = account_metadata(read_auth(account_path(paths, name))).get("email")
         except ManagerError:
             continue
-        if isinstance(stored_email, str) and stored_email.lower() == email:
+        if isinstance(stored_email, str) and stored_email.lower() == normalized_email:
+            # A Chrome profile has exactly one server-verified active account.
+            # Remove legacy mappings from former accounts on this profile.
+            for other_name in list_accounts(paths):
+                if other_name == name:
+                    continue
+                other_path = status_path(paths, other_name)
+                if not other_path.exists():
+                    continue
+                try:
+                    other_status = read_json(other_path)
+                except ManagerError:
+                    continue
+                other_profile = other_status.get("chrome_profile")
+                if not isinstance(other_profile, dict) or other_profile.get("directory") != profile.directory:
+                    continue
+                other_root = other_profile.get("chrome_root")
+                if isinstance(other_root, str) and profile_root and other_root != profile_root:
+                    continue
+                other_status.pop("chrome_profile", None)
+                atomic_write_json(other_path, other_status)
             path = status_path(paths, name)
             existing = read_json(path) if path.exists() else {}
             existing["chrome_profile"] = {
                 "directory": profile.directory,
                 "display_name": profile.display_name,
                 "chrome_root": str(profile.chrome_root) if profile.chrome_root else None,
-                "chatgpt_accounts": switch_accounts or [],
+                "active_email": normalized_email,
+                "saved_chatgpt_accounts": switch_accounts or [],
                 "updated_at": iso_now(),
             }
             atomic_write_json(path, existing)
@@ -55,6 +78,106 @@ def cached_chrome_profile_account(paths: Paths, profile: ChromeProfile) -> str |
             continue
         return name
     return None
+
+
+def cached_chrome_profile_accounts(paths: Paths, profile: ChromeProfile) -> list[str]:
+    """Return every managed account previously associated with this Chrome profile."""
+    profile_root = str(profile.chrome_root) if profile.chrome_root else None
+    matches: list[str] = []
+    for name in list_accounts(paths):
+        path = status_path(paths, name)
+        if not path.exists():
+            continue
+        try:
+            cached = read_json(path).get("chrome_profile")
+        except ManagerError:
+            continue
+        if not isinstance(cached, dict) or cached.get("directory") != profile.directory:
+            continue
+        cached_root = cached.get("chrome_root")
+        if isinstance(cached_root, str) and profile_root and cached_root != profile_root:
+            continue
+        matches.append(name)
+    return sorted(matches)
+
+
+def managed_account_for_email(paths: Paths, email: str | None) -> str | None:
+    if not email:
+        return None
+    for name in list_accounts(paths):
+        try:
+            stored_email = account_metadata(read_auth(account_path(paths, name))).get("email")
+        except ManagerError:
+            continue
+        if isinstance(stored_email, str) and stored_email.lower() == email.lower():
+            return name
+    return None
+
+
+def managed_account_plan(paths: Paths, name: str | None) -> str | None:
+    if not name:
+        return None
+    try:
+        auth = read_auth(account_path(paths, name))
+        token_plan = account_metadata(auth).get("plan")
+        path = status_path(paths, name)
+        status = read_json(path) if path.exists() else {}
+    except ManagerError:
+        return None
+    rate_limits = status.get("rate_limits")
+    current_plan = rate_limits.get("plan_type") if isinstance(rate_limits, dict) else None
+    if isinstance(current_plan, str) and current_plan.strip():
+        return current_plan.strip().lower()
+    if status.get("state") == "needs_login":
+        return None
+    return token_plan.strip().lower() if isinstance(token_plan, str) and token_plan.strip() else None
+
+
+def scan_chrome_profiles(paths: Paths) -> list[dict]:
+    """Classify local Chrome profiles without changing cookies or sessions."""
+    config = ensure_config(paths)
+    results: list[dict] = []
+    for profile in discover_chrome_profiles(config.get("chrome_root")):
+        saved_accounts = chatgpt_switch_accounts(profile)
+        result = {
+            "key": f"{profile.chrome_root or ''}:{profile.directory}",
+            "label": profile.label,
+            "directory": profile.directory,
+            "display_name": profile.display_name,
+            "chrome_root": str(profile.chrome_root) if profile.chrome_root else None,
+            "active_email": None,
+            "cookie_email": None,
+            "saved_accounts": saved_accounts,
+            "cached_accounts": cached_chrome_profile_accounts(paths, profile),
+            "managed_account": None,
+            "managed_plan": None,
+            "outcome": "signed_out",
+            "reason": None,
+        }
+        try:
+            cookies = load_chatgpt_cookies(profile)
+            result["cookie_email"] = chrome_account_email(cookies)
+            client = ChatGPTSessionClient(cookies, proxy_url=config.get("proxy"))
+            active_email = client.authenticated_account_email()
+            managed_account = managed_account_for_email(paths, active_email)
+            result.update({
+                "active_email": active_email,
+                "managed_account": managed_account,
+                "managed_plan": managed_account_plan(paths, managed_account),
+                "outcome": "signed_in",
+            })
+        except ProfileNotSignedIn as exc:
+            result["reason"] = str(exc)
+        except ProfilePartiallySignedIn as exc:
+            result["outcome"] = "partial"
+            result["reason"] = str(exc)
+        except ManagerError as exc:
+            result["outcome"] = "error"
+            result["reason"] = str(exc)
+        results.append(result)
+
+    rank = {"signed_out": 0, "partial": 1, "error": 2, "signed_in": 3}
+    return sorted(results, key=lambda item: (rank.get(str(item["outcome"]), 2), str(item["label"]).lower()))
 
 
 def session_monitor_is_disabled(paths: Paths, account: str | None) -> bool:
@@ -127,6 +250,10 @@ def session_result_message(result: dict, *, dry_run: bool = False) -> str:
             f"; WARNING: {len(switch_accounts)} saved ChatGPT accounts: {', '.join(switch_accounts)}"
             "; session operations apply only to the active email above"
         )
+    if result.get("partial_sign_in"):
+        account = result.get("account")
+        account_summary = f"; account {account}" if account else ""
+        return f"{profile}: email {email}{account_summary}; ChatGPT sign-in is incomplete; skipped: {result['error']}{switch_summary}"
     if result.get("error"):
         account = result.get("account")
         account_summary = f"; account {account}" if account else ""
@@ -161,9 +288,10 @@ def monitor_sessions(paths: Paths, *, dry_run: bool = False) -> dict:
             try:
                 cookies = load_chatgpt_cookies(profile)
                 email = chrome_account_email(cookies)
+                client = ChatGPTSessionClient(cookies, proxy_url=config.get("proxy"))
+                email = client.authenticated_account_email()
                 mapped_account = cache_chrome_profile(paths, email, profile, switch_accounts) or mapped_account
                 revocation_disabled = session_monitor_is_disabled(paths, mapped_account)
-                client = ChatGPTSessionClient(cookies, proxy_url=config.get("proxy"))
                 devices = client.devices()
                 sessions = codex_sessions(devices)
                 current = [device for device in sessions if device.get("is_current_device") is True]
@@ -236,6 +364,30 @@ def monitor_sessions(paths: Paths, *, dry_run: bool = False) -> dict:
                     "email": email,
                     "switch_accounts": switch_accounts,
                     "not_signed_in": True,
+                }
+                results.append(result)
+                write_log(paths, f"Chrome session monitor: {session_result_message(result, dry_run=dry_run)}")
+            except ProfilePartiallySignedIn as exc:
+                record_session_monitor_status(
+                    paths,
+                    mapped_account,
+                    devices=None,
+                    codex_sessions=None,
+                    excess=0,
+                    revoked=0,
+                    revocation_disabled=session_monitor_is_disabled(paths, mapped_account),
+                    current_device_protected=False,
+                    outcome="partial",
+                    error=str(exc),
+                )
+                result = {
+                    "profile": profile.name,
+                    "profile_label": profile.label,
+                    "account": mapped_account,
+                    "email": email,
+                    "switch_accounts": switch_accounts,
+                    "partial_sign_in": True,
+                    "error": str(exc),
                 }
                 results.append(result)
                 write_log(paths, f"Chrome session monitor: {session_result_message(result, dry_run=dry_run)}")

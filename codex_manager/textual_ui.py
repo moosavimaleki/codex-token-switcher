@@ -14,7 +14,7 @@ from .config import ensure_config
 from .errors import ManagerError
 from .history import available_history_accounts, build_history_window
 from .paths import Paths, account_path, list_accounts, status_path
-from .recommendation import account_recommendations
+from .recommendation import account_rank_sort_key, account_recommendations
 from .storage import atomic_write_json, load_state, read_json
 from .system import copy_text_to_clipboard
 from .time_utils import human_delta, parse_datetime, utcnow
@@ -59,11 +59,6 @@ def latest_account_refresh(paths: Paths) -> str | None:
     if latest is None:
         return None
     return latest.isoformat()
-
-
-def account_rank_sort_key(plan: str, score: float, name: str) -> tuple[bool, float, str]:
-    """Keep Free accounts below paid accounts while preserving recommendation rank."""
-    return (plan == "free", -score, name.lower())
 
 
 def run_check_command(paths: Paths) -> dict[str, object]:
@@ -112,6 +107,7 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
         ) from exc
 
     from .commands.accounts import activate, add_account, delete_account, rename_account
+    from .commands.sessions import scan_chrome_profiles
     from .codex.device_login import DeviceLoginCode, login_with_device_code
 
     class AccountDetailStatic(Static):
@@ -208,6 +204,9 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
         _activation_target: str | None = None
         _device_login_worker_ref = None
         _device_login_cancel_event: threading.Event | None = None
+        _chrome_scan_worker = None
+        _chrome_profiles: list[dict[str, object]] = []
+        _selected_browser_profile_key: str | None = None
         _add_method = "device"
         _last_data_signature: tuple[tuple[str, int, int], ...] = ()
 
@@ -250,7 +249,7 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
             align-vertical: middle;
             margin-bottom: 1;
         }
-        #accounts-layout, #chart-layout {
+        #accounts-layout, #chart-layout, #chrome-layout {
             height: 1fr;
         }
         #accounts-left {
@@ -259,6 +258,32 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
         #accounts-right {
             width: 3fr;
             margin-right: 0;
+        }
+        #chrome-left {
+            width: 7fr;
+        }
+        #chrome-right {
+            width: 3fr;
+            margin-right: 0;
+        }
+        #chrome-maintenance-panel {
+            height: auto;
+            padding: 0 1;
+        }
+        #chrome-maintenance-row {
+            height: auto;
+            align-vertical: middle;
+            margin: 0;
+        }
+        #chrome-scan-status {
+            color: #f8f8f2;
+            width: 1fr;
+            height: auto;
+            margin: 0;
+        }
+        #chrome-list-panel {
+            height: 1fr;
+            margin-bottom: 0;
         }
         #account-maintenance-panel {
             height: auto;
@@ -351,7 +376,7 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
         #account-detail-extra {
             height: 1fr;
         }
-        #account-table {
+        #account-table, #chrome-profile-table {
             height: 1fr;
         }
         #device-login-code-row {
@@ -413,8 +438,9 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
             ("ctrl+r", "refresh_data", "Refresh"),
             ("ctrl+shift+c", "copy_selection", "Copy"),
             ("ctrl+1", "switch_accounts", "Accounts"),
-            ("ctrl+2", "switch_add", "Add"),
-            ("ctrl+3", "switch_chart", "Chart"),
+            ("ctrl+2", "switch_chrome", "Chrome"),
+            ("ctrl+3", "switch_add", "Add"),
+            ("ctrl+4", "switch_chart", "Chart"),
         ]
 
         def compose(self) -> ComposeResult:
@@ -448,6 +474,21 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
                             yield Static("Selected Account", classes="title")
                             yield AccountDetailStatic("", id="account-detail-summary")
                             yield Static("", expand=True, id="account-detail-extra")
+                with TabPane("Chrome", id="chrome"):
+                    with Horizontal(id="chrome-layout"):
+                        with Vertical(id="chrome-left"):
+                            with Vertical(id="chrome-maintenance-panel", classes="panel"):
+                                with Horizontal(id="chrome-maintenance-row"):
+                                    yield Static("Profile scan has not run yet.", id="chrome-scan-status")
+                                    yield Button("Scan Profiles", id="scan-chrome-profiles", variant="primary", compact=True)
+                            with Vertical(id="chrome-list-panel", classes="panel"):
+                                yield Static("Chrome Profiles", classes="title")
+                                yield DataTable(show_row_labels=False, cursor_type="row", zebra_stripes=True, id="chrome-profile-table")
+                                with Horizontal(classes="button-row"):
+                                    yield Button("Open Chrome", id="open-browser-profile", disabled=True)
+                        with Vertical(id="chrome-right", classes="panel"):
+                            yield Static("Selected Chrome Profile", classes="title")
+                            yield Static("Scan Chrome profiles to verify their ChatGPT sign-in state.", id="chrome-profile-detail")
                 with TabPane("Add", id="add"):
                     with Vertical():
                         with Vertical(id="add-method-panel", classes="panel"):
@@ -527,7 +568,9 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
 
         def on_mount(self) -> None:
             account_table = self.query_one("#account-table", DataTable)
-            account_table.add_columns("Pick", "On", "Account", "Email", "Plan", "Chrome", "Codex", "Revoked", "State", "Weekly")
+            account_table.add_columns("Pick", "On", "Account", "Email", "Plan", "Chrome", "Codex", "Revoked", "State", "Limit")
+            chrome_table = self.query_one("#chrome-profile-table", DataTable)
+            chrome_table.add_columns("Status", "Profile", "Active ChatGPT", "Plan", "Saved ChatGPT", "Previous")
             self._refresh_dashboard_data(update_banner=False)
             self._apply_chart_defaults()
             self._set_add_method("device", focus_input=False)
@@ -543,6 +586,11 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
 
         def action_switch_add(self) -> None:
             self._switch_tab("add")
+
+        def action_switch_chrome(self) -> None:
+            self._switch_tab("chrome")
+            if self._chrome_scan_worker is None and not self._chrome_profiles:
+                self._scan_chrome_profiles()
 
         def action_switch_chart(self) -> None:
             self._switch_tab("charts", after=self._render_chart_if_possible)
@@ -566,6 +614,8 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
         def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
             if event.data_table.id == "account-table" and self._active_tab() == "accounts":
                 self._set_selected_account(str(event.row_key.value))
+            elif event.data_table.id == "chrome-profile-table" and self._active_tab() == "chrome":
+                self._set_selected_browser_profile(str(event.row_key.value))
 
         def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
             if event.data_table.id == "account-table" and self._active_tab() == "accounts":
@@ -578,6 +628,9 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
                     self._open_selected_chrome_profile()
                     return
                 self._activate_selected_account()
+            elif event.data_table.id == "chrome-profile-table" and self._active_tab() == "chrome":
+                self._set_selected_browser_profile(str(event.row_key.value))
+                self._open_selected_browser_profile()
 
         async def on_button_pressed(self, event: Button.Pressed) -> None:
             button_id = event.button.id
@@ -597,6 +650,10 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
                 self._open_selected_chrome_profile()
             elif button_id == "toggle-session-monitor":
                 self._toggle_selected_session_monitor()
+            elif button_id == "scan-chrome-profiles":
+                self._scan_chrome_profiles()
+            elif button_id == "open-browser-profile":
+                self._open_selected_browser_profile()
             elif button_id == "start-device-login":
                 self._start_device_login()
             elif button_id == "cancel-device-login":
@@ -630,6 +687,8 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
         def _focus_tab_content(self, tab_id: str) -> None:
             if tab_id == "accounts":
                 self._focus_account_table()
+            elif tab_id == "chrome":
+                self.query_one("#chrome-profile-table", DataTable).focus()
             elif tab_id == "charts":
                 self.query_one("#chart-account", Select).focus()
             elif tab_id == "add":
@@ -773,6 +832,80 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
             if names and self._selected_chart_account() not in names:
                 select.value = active if active in names else names[0]
 
+        def _refresh_chrome_profile_table(self) -> None:
+            table = self.query_one("#chrome-profile-table", DataTable)
+            table.clear(columns=False)
+            if not self._chrome_profiles:
+                self._selected_browser_profile_key = None
+                self.query_one("#open-browser-profile", Button).disabled = True
+                self.query_one("#chrome-profile-detail", Static).update("No Chrome profile scan result is available yet.")
+                return
+            for profile in self._chrome_profiles:
+                saved_accounts = profile.get("saved_accounts")
+                cached_accounts = profile.get("cached_accounts")
+                table.add_row(
+                    self._chrome_status_badge(str(profile.get("outcome") or "error")),
+                    str(profile.get("label") or "unknown"),
+                    str(profile.get("active_email") or "-"),
+                    self._plan_badge(str(profile.get("managed_plan") or "unknown")),
+                    ", ".join(saved_accounts) if isinstance(saved_accounts, list) and saved_accounts else "-",
+                    ", ".join(cached_accounts) if isinstance(cached_accounts, list) and cached_accounts else "-",
+                    key=str(profile["key"]),
+                )
+            available = {str(profile["key"]) for profile in self._chrome_profiles}
+            target = self._selected_browser_profile_key if self._selected_browser_profile_key in available else str(self._chrome_profiles[0]["key"])
+            self._select_browser_profile_row(target)
+
+        def _chrome_status_badge(self, outcome: str) -> Text:
+            labels = {
+                "signed_in": ("SIGNED IN", "bold #50fa7b"),
+                "partial": ("PARTIAL", "bold #ff5555"),
+                "signed_out": ("SIGNED OUT", "bold #ff5555"),
+                "error": ("CHECK ERROR", "bold #ffb86c"),
+            }
+            label, style = labels.get(outcome, ("UNKNOWN", "dim"))
+            return Text(label, style=style)
+
+        def _selected_browser_profile(self) -> dict[str, object] | None:
+            key = self._selected_browser_profile_key
+            return next((profile for profile in self._chrome_profiles if profile.get("key") == key), None) if key else None
+
+        def _set_selected_browser_profile(self, key: str | None) -> None:
+            self._selected_browser_profile_key = key
+            profile = self._selected_browser_profile()
+            self.query_one("#open-browser-profile", Button).disabled = profile is None
+            if profile is None:
+                self.query_one("#chrome-profile-detail", Static).update("Pick a Chrome profile to inspect its sign-in state.")
+                return
+            saved_accounts = profile.get("saved_accounts")
+            cached_accounts = profile.get("cached_accounts")
+            lines = [
+                f"Profile: {profile.get('label') or 'unknown'}",
+                f"Status: {str(profile.get('outcome') or 'unknown').replace('_', ' ')}",
+                f"Active ChatGPT: {profile.get('active_email') or '-'}",
+                f"Cookie Account: {profile.get('cookie_email') or '-'}",
+                f"Plan: {profile.get('managed_plan') or '-'}",
+                "Saved ChatGPT Accounts: " + ", ".join(saved_accounts) if isinstance(saved_accounts, list) and saved_accounts else "Saved ChatGPT Accounts: -",
+                "Previous Managed Accounts: " + ", ".join(cached_accounts) if isinstance(cached_accounts, list) and cached_accounts else "Previous Managed Accounts: -",
+            ]
+            reason = profile.get("reason")
+            if isinstance(reason, str) and reason:
+                lines.append(f"Reason: {reason}")
+            self.query_one("#chrome-profile-detail", Static).update("\n".join(lines))
+
+        def _select_browser_profile_row(self, key: str | None) -> None:
+            if not key:
+                self._set_selected_browser_profile(None)
+                return
+            table = self.query_one("#chrome-profile-table", DataTable)
+            try:
+                row_index = [str(profile["key"]) for profile in self._chrome_profiles].index(key)
+            except ValueError:
+                self._set_selected_browser_profile(None)
+                return
+            table.move_cursor(row=row_index, column=0, animate=False, scroll=True)
+            self._set_selected_browser_profile(key)
+
         def _update_account_table(self, active: str | None) -> None:
             table = self.query_one("#account-table", DataTable)
             table.clear(columns=False)
@@ -815,7 +948,7 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
 
         def _session_count_badge(self, value: str) -> Text:
             if not value.isdigit():
-                if value == "error":
+                if value in {"error", "partial"}:
                     return Text(value, style="bold #ff5555")
                 return Text(value, style="bold #ffb86c" if value == "unavailable" else "dim")
             count = int(value)
@@ -983,19 +1116,34 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
             if profile is None:
                 self._set_banner("No Chrome profile mapping for this account yet. Run the session scan first.")
                 return
+            self._open_chrome_profile(profile["directory"], profile.get("chrome_root"))
+
+        def _open_selected_browser_profile(self) -> None:
+            profile = self._selected_browser_profile()
+            if profile is None:
+                self._set_banner("Select a Chrome profile first.")
+                return
+            directory = profile.get("directory")
+            if not isinstance(directory, str) or not directory:
+                self._set_banner("The selected Chrome profile has no profile directory.")
+                return
+            root = profile.get("chrome_root")
+            self._open_chrome_profile(directory, root if isinstance(root, str) else None)
+
+        def _open_chrome_profile(self, directory: str, root: str | None) -> None:
             chrome = next((shutil.which(name) for name in ("google-chrome", "google-chrome-stable", "chromium") if shutil.which(name)), None)
             if chrome is None:
                 self._set_banner("Chrome or Chromium was not found in PATH.")
                 return
-            command = [chrome, f"--profile-directory={profile['directory']}"]
-            if root := profile.get("chrome_root"):
+            command = [chrome, f"--profile-directory={directory}"]
+            if root:
                 command.append(f"--user-data-dir={root}")
             try:
                 subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
             except OSError as exc:
                 self._set_banner(f"Could not open Chrome: {exc}")
                 return
-            self._set_banner(f"Opened Chrome profile {profile['directory']}.")
+            self._set_banner(f"Opened Chrome profile {directory}.")
 
         def _set_selected_account(self, name: str | None) -> None:
             self._selected_account_name = name
@@ -1209,6 +1357,20 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
                 return
             self._activate_account(name, source="Charts")
 
+        def _scan_chrome_profiles(self) -> None:
+            if self._chrome_scan_worker is not None:
+                self._set_banner("Chrome profile scan is already running.")
+                return
+            button = self.query_one("#scan-chrome-profiles", Button)
+            button.disabled = True
+            button.label = "Scanning..."
+            self.query_one("#chrome-scan-status", Static).update("Verifying complete ChatGPT sign-in for every Chrome profile...")
+            self._chrome_scan_worker = self._scan_chrome_profiles_worker()
+
+        @work(thread=True, group="chrome-profile-scan", exclusive=True, exit_on_error=False)
+        def _scan_chrome_profiles_worker(self) -> list[dict]:
+            return scan_chrome_profiles(paths)
+
         @work(thread=True, group="account-check", exclusive=True, exit_on_error=False)
         def _check_accounts_worker(self) -> dict:
             return run_check_command(paths)
@@ -1251,6 +1413,32 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
                 self._finish_activation_worker(event)
             elif event.worker is self._device_login_worker_ref:
                 self._finish_device_login_worker(event)
+            elif event.worker is self._chrome_scan_worker:
+                self._finish_chrome_scan_worker(event)
+
+        def _finish_chrome_scan_worker(self, event: Worker.StateChanged) -> None:
+            button = self.query_one("#scan-chrome-profiles", Button)
+            button.disabled = False
+            button.label = "Scan Profiles"
+            self._chrome_scan_worker = None
+            status = self.query_one("#chrome-scan-status", Static)
+            if event.state == WorkerState.SUCCESS:
+                result = event.worker.result
+                self._chrome_profiles = result if isinstance(result, list) else []
+                self._refresh_chrome_profile_table()
+                counts = {outcome: sum(1 for item in self._chrome_profiles if item.get("outcome") == outcome) for outcome in ("signed_out", "partial", "signed_in", "error")}
+                status.update(
+                    f"Profiles: {len(self._chrome_profiles)} | signed out: {counts['signed_out']} | partial: {counts['partial']} | signed in: {counts['signed_in']} | errors: {counts['error']}"
+                )
+                self._set_banner("Chrome profile scan finished.")
+            elif event.state == WorkerState.ERROR:
+                error = event.worker.error
+                message = str(error) if error else "Chrome profile scan failed."
+                status.update(message)
+                self._set_banner(message)
+            else:
+                status.update("Chrome profile scan cancelled.")
+                self._set_banner("Chrome profile scan cancelled.")
 
         def _finish_activation_worker(self, event: Worker.StateChanged) -> None:
             name = self._activation_target

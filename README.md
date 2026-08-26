@@ -120,8 +120,9 @@ curl http://127.0.0.1:4000/health/liveliness
 ```
 
 The local proxy is bound to `127.0.0.1` and does not require a client token. Any OpenRouter model
-can be requested with the `openrouter/` prefix, for example
-`openrouter/nvidia/nemotron-3.5-lightning:free`. The model and routing settings live in
+can be requested by its normal OpenRouter ID, for example
+`nvidia/nemotron-3.5-lightning:free` (the optional `openrouter/` prefix also works). The model and
+routing settings live in
 `litellm/config.yaml`.
 The OpenRouter keys must be ordinary API keys, not management keys.
 

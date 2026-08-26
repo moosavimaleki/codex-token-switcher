@@ -119,9 +119,10 @@ systemctl --user restart codex-manager-litellm.service
 curl http://127.0.0.1:4000/health/liveliness
 ```
 
-Use `Authorization: Bearer <LITELLM_MASTER_KEY>` from that `.env` when calling the proxy, and use
-`openrouter-model` as the model name. It routes to OpenRouter's `stealth/ox-alpha` model. The model
-and routing settings live in `litellm/config.yaml`.
+The local proxy is bound to `127.0.0.1` and does not require a client token. Any OpenRouter model
+can be requested with the `openrouter/` prefix, for example
+`openrouter/nvidia/nemotron-3.5-lightning:free`. The model and routing settings live in
+`litellm/config.yaml`.
 The OpenRouter keys must be ordinary API keys, not management keys.
 
 Maintenance is scheduled every 6 hours using a user systemd timer when available, otherwise a

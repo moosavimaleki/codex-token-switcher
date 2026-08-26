@@ -3,33 +3,33 @@
 
 model_list:
   # All deployments use Ox Alpha; each key is a separate OpenRouter account.
-  - model_name: openrouter-model
+  - model_name: "openrouter/*"
     litellm_params:
-      model: openrouter/stealth/ox-alpha
+      model: "openrouter/*"
       api_key: os.environ/OPENROUTER_API_KEY_1
       api_base: https://openrouter.ai/api/v1
 
-  - model_name: openrouter-model
+  - model_name: "openrouter/*"
     litellm_params:
-      model: openrouter/stealth/ox-alpha
+      model: "openrouter/*"
       api_key: os.environ/OPENROUTER_API_KEY_2
       api_base: https://openrouter.ai/api/v1
 
-  - model_name: openrouter-model
+  - model_name: "openrouter/*"
     litellm_params:
-      model: openrouter/stealth/ox-alpha
+      model: "openrouter/*"
       api_key: os.environ/OPENROUTER_API_KEY_3
       api_base: https://openrouter.ai/api/v1
 
-  - model_name: openrouter-model
+  - model_name: "openrouter/*"
     litellm_params:
-      model: openrouter/stealth/ox-alpha
+      model: "openrouter/*"
       api_key: os.environ/OPENROUTER_API_KEY_4
       api_base: https://openrouter.ai/api/v1
 
-  - model_name: openrouter-model
+  - model_name: "openrouter/*"
     litellm_params:
-      model: openrouter/stealth/ox-alpha
+      model: "openrouter/*"
       api_key: os.environ/OPENROUTER_API_KEY_5
       api_base: https://openrouter.ai/api/v1
 
@@ -41,6 +41,3 @@ router_settings:
 
 litellm_settings:
   drop_params: true
-
-general_settings:
-  master_key: os.environ/LITELLM_MASTER_KEY

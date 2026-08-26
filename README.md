@@ -22,9 +22,11 @@ codex-manager check
 codex-manager sessions --dry-run
 codex-manager chart --hours 24
 codex-manager compact <session_id>
+codex-manager gateway
 codex-manager config
 codex-manager doctor
 codex-manager maintain --quiet
+scripts/setup-litellm.sh
 ```
 
 `codex-manager ls` opens a Textual dashboard when run in an interactive terminal. The dashboard uses
@@ -80,6 +82,13 @@ session monitoring, randomized delay, and scheduler apply. Script-friendly comma
 - crontab fallback status;
 - manager log tail.
 
+`codex-manager gateway` runs a local OpenAI-compatible gateway. It exposes `POST /v1/responses`,
+`GET /v1/models`, and `GET /health`, selects among stored accounts using the latest available
+5-hour, weekly, or monthly quota windows, and forwards requests directly to the Codex backend
+with that account's access token. The gateway uses a local bearer key from `gateway_api_key` and
+does not read or modify the active `~/.codex/auth.json`. A conversation can be pinned to an
+account with the `X-Conversation-ID` header.
+
 ## Setup
 
 ```bash
@@ -96,6 +105,24 @@ The setup script installs:
 The installer intentionally avoids virtualenvs. On distributions such as Debian/Ubuntu it uses
 `pip --user --break-system-packages` for the selected interpreter so Textual dependencies end up in
 the same Python environment that launches `codex-manager`.
+
+### LiteLLM with multiple OpenRouter accounts
+
+The optional `scripts/setup-litellm.sh` installs LiteLLM and creates a user service on
+`127.0.0.1:4000`. It uses three OpenRouter API keys as separate deployments of the same model;
+LiteLLM load-balances requests and retries another deployment when one fails.
+
+```bash
+scripts/setup-litellm.sh
+$EDITOR ~/.config/codex-manager/litellm/.env
+systemctl --user restart codex-manager-litellm.service
+curl http://127.0.0.1:4000/health/liveliness
+```
+
+Use `Authorization: Bearer <LITELLM_MASTER_KEY>` from that `.env` when calling the proxy, and use
+`openrouter-model` as the model name. It routes to OpenRouter's `stealth/ox-alpha` model. The model
+and routing settings live in `litellm/config.yaml`.
+The OpenRouter keys must be ordinary API keys, not management keys.
 
 Maintenance is scheduled every 6 hours using a user systemd timer when available, otherwise a
 crontab entry. A second 5-minute monitor timer runs `codex-manager check --quiet` so limit history
@@ -120,7 +147,10 @@ Default config:
   "session_monitor_interval": "10min",
   "chrome_root": null,
   "randomized_delay": "10min",
-  "history_retention_days": 90
+  "history_retention_days": 90,
+  "gateway_listen": "127.0.0.1:8787",
+  "gateway_api_key": "change-me",
+  "gateway_upstream": "https://chatgpt.com/backend-api/codex"
 }
 ```
 

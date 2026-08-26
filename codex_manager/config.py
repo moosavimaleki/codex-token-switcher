@@ -24,6 +24,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "chrome_root": None,
     "randomized_delay": DEFAULT_RANDOMIZED_DELAY,
     "history_retention_days": DEFAULT_HISTORY_RETENTION_DAYS,
+    "gateway_listen": "127.0.0.1:8787",
+    "gateway_api_key": "change-me",
+    "gateway_upstream": "https://chatgpt.com/backend-api/codex",
 }
 
 _DURATION_RE = re.compile(r"^\s*(\d+)\s*([A-Za-z]+)?\s*$")
@@ -122,7 +125,16 @@ def normalize_config(config: dict[str, Any]) -> dict[str, Any]:
             allow_zero=True,
         ),
         "history_retention_days": retention_days,
+        "gateway_listen": _string_config(merged.get("gateway_listen"), "gateway_listen"),
+        "gateway_api_key": _string_config(merged.get("gateway_api_key"), "gateway_api_key"),
+        "gateway_upstream": _string_config(merged.get("gateway_upstream"), "gateway_upstream"),
     }
+
+
+def _string_config(value: Any, field: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ManagerError(f"{field} must be a non-empty string")
+    return value.strip()
 
 
 def load_config(paths: Paths) -> dict[str, Any]:

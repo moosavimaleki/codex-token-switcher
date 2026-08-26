@@ -926,7 +926,7 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
                     self._session_count_badge(row["codex_sessions"]),
                     self._revoked_count_badge(row["revoked_total"]),
                     self._state_badge(row["state"]),
-                    self._limit_bar(recommendation.weekly_remaining if recommendation else None, "magenta"),
+                    self._limit_summary_badge(row["limits"]),
                     key=row["name"],
                 )
 
@@ -1000,6 +1000,13 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
             text.append("░" * empty, style="dim")
             text.append(f" {clamped:>5.1f}%", style=f"bold {color}")
             return text
+
+        def _limit_summary_badge(self, summary: str) -> Text:
+            if summary in {"limits unknown", "limits unavailable"}:
+                return Text(summary, style="dim")
+            if " 0%" in summary:
+                return Text(summary, style="bold #ff5555")
+            return Text(summary, style="bold #8be9fd")
 
         def _account_option_label(self, name: str, active: str | None) -> str:
             return f"● {name}  [primary]" if name == active else f"○ {name}"
@@ -1283,8 +1290,8 @@ def run_textual_dashboard(paths: Paths, *, initial_tab: str = "accounts", chart:
             }.get(recommendation.label, "bold #f8f8f2")
             status_text.append(recommendation.label, style=status_style)
             body.add_row("Status", status_text)
-            body.add_row("Should Use", self._metric_line(target_used, color="magenta"))
-            body.add_row("Used Now", self._metric_line(weekly_used, color="cyan"))
+            body.add_row(f"Target ({recommendation.pacing_label})", self._metric_line(target_used, color="magenta"))
+            body.add_row(f"Used ({recommendation.pacing_label})", self._metric_line(weekly_used, color="cyan"))
             body.add_row("Pace Gap", self._delta_line(pace_gap))
             return Panel(body, title="Recommendation", border_style="#6272a4")
 

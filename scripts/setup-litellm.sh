@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PYTHON_BIN="${PYTHON_BIN:-$(command -v python3)}"
+LITELLM_HOME="${CODEX_MANAGER_LITELLM_HOME:-$HOME/.config/codex-manager/litellm}"
+LITELLM_VENV="$LITELLM_HOME/venv"
+
+if [[ -z "$PYTHON_BIN" ]]; then
+  echo "python3 not found in PATH" >&2
+  exit 1
+fi
+
+mkdir -p "$LITELLM_HOME"
+chmod 700 "$LITELLM_HOME"
+if [[ ! -x "$LITELLM_VENV/bin/python" ]]; then
+  "$PYTHON_BIN" -m venv "$LITELLM_VENV"
+fi
+"$LITELLM_VENV/bin/python" -m pip install --upgrade 'litellm[proxy]'
+install -m 0600 "$PROJECT_DIR/litellm/.env.example" "$LITELLM_HOME/.env.example"
+install -m 0644 "$PROJECT_DIR/litellm/config.yaml" "$LITELLM_HOME/config.yaml"
+
+if [[ ! -e "$LITELLM_HOME/.env" ]]; then
+  install -m 0600 "$PROJECT_DIR/litellm/.env.example" "$LITELLM_HOME/.env"
+  echo "Created $LITELLM_HOME/.env; edit it with your OpenRouter keys, then start the service." >&2
+fi
+
+SYSTEMD_DIR="$HOME/.config/systemd/user"
+mkdir -p "$SYSTEMD_DIR"
+cat > "$SYSTEMD_DIR/codex-manager-litellm.service" <<EOF
+[Unit]
+Description=LiteLLM OpenRouter proxy for codex-manager
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=$LITELLM_HOME
+EnvironmentFile=$LITELLM_HOME/.env
+ExecStart=$LITELLM_VENV/bin/litellm --config $LITELLM_HOME/config.yaml --host 127.0.0.1 --port 4000
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+EOF
+
+if command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; then
+  systemctl --user daemon-reload
+  systemctl --user enable --now codex-manager-litellm.service
+  echo "LiteLLM is running at http://127.0.0.1:4000"
+else
+  echo "systemd user service created at $SYSTEMD_DIR/codex-manager-litellm.service"
+  echo "Start manually with: $LITELLM_VENV/bin/litellm --config $LITELLM_HOME/config.yaml --host 127.0.0.1 --port 4000"
+fi
+
+echo "Edit credentials: $LITELLM_HOME/.env"
+echo "Client model name: openrouter-model"

@@ -47,6 +47,26 @@ def make_rate_limits(
 
 
 class RecommendationTests(unittest.TestCase):
+    def test_free_monthly_window_uses_monthly_pacing_label(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with mock.patch.dict(
+                os.environ,
+                {"CODEX_MANAGER_HOME": f"{tmpdir}/manager", "CODEX_HOME": f"{tmpdir}/codex"},
+                clear=False,
+            ):
+                paths = Paths()
+                ensure_dirs(paths)
+                limits = make_rate_limits(primary=100, weekly=80)
+                limits["plan_type"] = "free"
+                limits["snapshots"][0]["plan_type"] = "free"
+                limits["snapshots"][0]["primary"] = None
+                limits["snapshots"][0]["secondary"]["window_minutes"] = 30 * 24 * 60
+                atomic_write_json(status_path(paths, "free"), {"state": "ok", "rate_limits": limits})
+
+                recs = account_recommendations(paths, ["free"], now=NOW)
+
+                self.assertEqual("monthly", recs["free"].pacing_label)
+
     def test_weekly_pacing_beats_larger_balance(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             with mock.patch.dict(

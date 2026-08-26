@@ -32,7 +32,7 @@ def make_auth(*, refresh_token: str, account_id: str, email: str, subject: str, 
     }
 
 
-def limits(*, plan: str, remaining: float) -> dict:
+def limits(*, plan: str, remaining: float, five_hour_remaining: float | None = None) -> dict:
     return {
         "fetched_at": "2026-08-25T12:00:00Z",
         "plan_type": plan,
@@ -47,6 +47,18 @@ def limits(*, plan: str, remaining: float) -> dict:
                     "window_minutes": 30 * 24 * 60 if plan == "free" else 7 * 24 * 60,
                     "reset_after_seconds": 3600,
                 },
+                **(
+                    {
+                        "primary": {
+                            "remaining_percent": five_hour_remaining,
+                            "used_percent": 100.0 - five_hour_remaining,
+                            "window_minutes": 5 * 60,
+                            "reset_after_seconds": 3600,
+                        }
+                    }
+                    if five_hour_remaining is not None
+                    else {}
+                ),
             }
         ],
     }
@@ -96,6 +108,42 @@ class BestCommandTests(unittest.TestCase):
             payload = read_json(status)
             payload["rate_limits"] = limits(plan="free", remaining=0.0)
             atomic_write_json(status, payload)
+
+            with self.assertRaisesRegex(ManagerError, "all cached account limits are exhausted"):
+                cmd_best(SimpleNamespace())
+
+    def test_rejects_an_account_when_its_five_hour_limit_is_exhausted(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir, mock.patch.dict(
+            os.environ,
+            {"CODEX_HOME": f"{tmpdir}/codex", "CODEX_MANAGER_HOME": f"{tmpdir}/manager"},
+            clear=False,
+        ):
+            paths = self._paths(tmpdir)
+            status = status_path(paths, "paid-full")
+            payload = read_json(status)
+            payload["rate_limits"] = limits(plan="plus", remaining=84.0, five_hour_remaining=0.0)
+            atomic_write_json(status, payload)
+
+            rows = best_account_rows(paths)
+            paid = next(row for row in rows if row.name == "paid-full")
+            self.assertFalse(paid.available)
+
+    def test_reports_exhaustion_when_five_hour_limit_blocks_every_account(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir, mock.patch.dict(
+            os.environ,
+            {"CODEX_HOME": f"{tmpdir}/codex", "CODEX_MANAGER_HOME": f"{tmpdir}/manager"},
+            clear=False,
+        ):
+            paths = self._paths(tmpdir)
+            for name, plan, remaining in (("paid-full", "plus", 84.0), ("free-ready", "free", 75.0)):
+                status = status_path(paths, name)
+                payload = read_json(status)
+                payload["rate_limits"] = limits(
+                    plan=plan,
+                    remaining=remaining,
+                    five_hour_remaining=0.0,
+                )
+                atomic_write_json(status, payload)
 
             with self.assertRaisesRegex(ManagerError, "all cached account limits are exhausted"):
                 cmd_best(SimpleNamespace())

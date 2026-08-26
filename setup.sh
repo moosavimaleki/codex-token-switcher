@@ -32,6 +32,13 @@ cp -R "$PROJECT_DIR/codex_manager" "$INSTALL_DIR/codex_manager"
 install -m 0755 "$PROJECT_DIR/codex-manager" "$INSTALL_DIR/codex-manager"
 install -m 0644 "$PROJECT_DIR/requirements.txt" "$INSTALL_DIR/requirements.txt"
 
+if command -v cargo >/dev/null 2>&1; then
+  cargo build --release --manifest-path "$PROJECT_DIR/rust-gateway/Cargo.toml"
+  install -m 0755 "$PROJECT_DIR/rust-gateway/target/release/codex-manager-gateway" "$INSTALL_DIR/codex-manager-gateway"
+else
+  echo "cargo not found; OpenAI-compatible gateway was not built" >&2
+fi
+
 cat > "$BIN_DIR/codex-manager" <<EOF
 #!/usr/bin/env bash
 PYTHONPATH="$INSTALL_DIR:\${PYTHONPATH:-}" exec "$PYTHON_BIN" "$INSTALL_DIR/codex-manager" "\$@"

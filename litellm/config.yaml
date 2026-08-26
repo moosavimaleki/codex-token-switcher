@@ -1,0 +1,46 @@
+# LiteLLM proxy configuration for multiple OpenRouter accounts.
+# Keep credentials in litellm/.env (never commit that file).
+
+model_list:
+  # All deployments use Ox Alpha; each key is a separate OpenRouter account.
+  - model_name: openrouter-model
+    litellm_params:
+      model: openrouter/stealth/ox-alpha
+      api_key: os.environ/OPENROUTER_API_KEY_1
+      api_base: https://openrouter.ai/api/v1
+
+  - model_name: openrouter-model
+    litellm_params:
+      model: openrouter/stealth/ox-alpha
+      api_key: os.environ/OPENROUTER_API_KEY_2
+      api_base: https://openrouter.ai/api/v1
+
+  - model_name: openrouter-model
+    litellm_params:
+      model: openrouter/stealth/ox-alpha
+      api_key: os.environ/OPENROUTER_API_KEY_3
+      api_base: https://openrouter.ai/api/v1
+
+  - model_name: openrouter-model
+    litellm_params:
+      model: openrouter/stealth/ox-alpha
+      api_key: os.environ/OPENROUTER_API_KEY_4
+      api_base: https://openrouter.ai/api/v1
+
+  - model_name: openrouter-model
+    litellm_params:
+      model: openrouter/stealth/ox-alpha
+      api_key: os.environ/OPENROUTER_API_KEY_5
+      api_base: https://openrouter.ai/api/v1
+
+router_settings:
+  routing_strategy: simple-shuffle
+  num_retries: 2
+  allowed_fails: 1
+  cooldown_time: 60
+
+litellm_settings:
+  drop_params: true
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY

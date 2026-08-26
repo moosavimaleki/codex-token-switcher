@@ -12,6 +12,7 @@ venv/
 .codex-manager/
 *.log
 *.tmp
+litellm/.env
 
 # OS/editor
 .DS_Store
@@ -22,3 +23,4 @@ venv/
 dist/
 build/
 *.egg-info/
+rust-gateway/target/

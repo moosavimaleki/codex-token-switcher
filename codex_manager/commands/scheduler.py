@@ -42,6 +42,10 @@ def sessions_scheduler_paths(paths: Paths) -> tuple[Path, Path]:
     return user_dir / "codex-manager-sessions.service", user_dir / "codex-manager-sessions.timer"
 
 
+def gateway_service_path(paths: Paths) -> Path:
+    return paths.home / ".config/systemd/user/codex-manager-gateway.service"
+
+
 def write_text_file(path: Path, content: str, mode: int = 0o644) -> None:
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
@@ -95,6 +99,7 @@ def apply_scheduler(paths: Paths, bin_path: str | None = None) -> str:
     service_path, timer_path = scheduler_paths(paths)
     monitor_service_path, monitor_timer_path = monitor_scheduler_paths(paths)
     sessions_service_path, sessions_timer_path = sessions_scheduler_paths(paths)
+    gateway_path = gateway_service_path(paths)
     write_text_file(service_path, f"""[Unit]
 Description=Codex Manager maintenance
 
@@ -155,6 +160,18 @@ Unit=codex-manager-sessions.service
 [Install]
 WantedBy=timers.target
 """)
+    write_text_file(gateway_path, f"""[Unit]
+Description=Codex Manager OpenAI-compatible gateway
+After=network-online.target
+
+[Service]
+ExecStart={bin_path} gateway
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+""")
 
     if shutil.which("systemctl"):
         code, _ = run_command(["systemctl", "--user", "show-environment"], timeout=5)
@@ -164,11 +181,13 @@ WantedBy=timers.target
                 ["systemctl", "--user", "enable", "--now", "codex-manager-maintain.timer"],
                 ["systemctl", "--user", "enable", "--now", "codex-manager-check.timer"],
                 ["systemctl", "--user", "enable", "--now", "codex-manager-sessions.timer"],
+                ["systemctl", "--user", "enable", "--now", "codex-manager-gateway.service"],
+                ["systemctl", "--user", "restart", "codex-manager-gateway.service"],
             ):
                 command_code, output = run_command(command, timeout=10)
                 if command_code != 0:
                     raise ManagerError(f"{' '.join(command)} failed: {output}")
-            return "systemd user timers: codex-manager-maintain.timer, codex-manager-check.timer, codex-manager-sessions.timer"
+            return "systemd user units: codex-manager-maintain.timer, codex-manager-check.timer, codex-manager-sessions.timer, codex-manager-gateway.service"
 
     if shutil.which("crontab"):
         return install_crontab(

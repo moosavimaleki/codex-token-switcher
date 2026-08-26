@@ -23,7 +23,7 @@ class BestAccountRow:
 
     @property
     def available(self) -> bool:
-        return self.state not in {"needs_login", "error"} and self.remaining is not None and self.remaining > 0.0
+        return self.state not in {"needs_login", "error"} and self.recommendation.quota_available
 
 
 def best_account_rows(paths: Paths) -> list[BestAccountRow]:
@@ -84,7 +84,12 @@ def cmd_best(_args) -> int:
     print_best_account_rows(rows)
     selected = select_best_account(rows)
     if selected is None:
-        if rows and all(row.remaining is not None and row.remaining <= 0.0 for row in rows):
+        if rows and all(
+            row.state not in {"needs_login", "error"}
+            and row.remaining is not None
+            and not row.recommendation.quota_available
+            for row in rows
+        ):
             raise ManagerError("all cached account limits are exhausted")
         raise ManagerError("no account has an available cached limit; run codex-manager check")
 

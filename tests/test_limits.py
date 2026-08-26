@@ -12,7 +12,7 @@ from codex_manager.codex.limits import (
 
 
 class RateLimitResetFormattingTests(unittest.TestCase):
-    def test_normalize_moves_a_single_primary_window_to_weekly(self) -> None:
+    def test_normalize_preserves_a_single_primary_window(self) -> None:
         rate_limits = normalize_rate_limits(
             {
                 "rate_limit": {
@@ -22,8 +22,8 @@ class RateLimitResetFormattingTests(unittest.TestCase):
             }
         )
         snapshot = rate_limits["snapshots"][0]
-        self.assertIsNone(snapshot["primary"])
-        self.assertEqual(64.0, snapshot["secondary"]["remaining_percent"])
+        self.assertEqual(64.0, snapshot["primary"]["remaining_percent"])
+        self.assertIsNone(snapshot["secondary"])
 
     def test_format_rate_limit_resets_uses_tomorrow_and_absolute_day_labels(self) -> None:
         now = dt.datetime(2026, 6, 12, 9, 0, tzinfo=dt.timezone.utc)
@@ -40,8 +40,9 @@ class RateLimitResetFormattingTests(unittest.TestCase):
 
         lines = format_rate_limit_resets(rate_limits, now=now)
 
-        self.assertEqual(1, len(lines))
-        self.assertTrue(lines[0].startswith("Weekly reset: 3d 0h left | Mon 2026-06-15 at "))
+        self.assertEqual(2, len(lines))
+        self.assertTrue(lines[0].startswith("5h reset: 1d 1h left |"))
+        self.assertTrue(lines[1].startswith("Weekly reset: 3d 0h left | Mon 2026-06-15 at "))
 
     def test_describe_rate_limit_windows_marks_reached_status(self) -> None:
         now = dt.datetime(2026, 6, 12, 9, 0, tzinfo=dt.timezone.utc)
@@ -59,11 +60,29 @@ class RateLimitResetFormattingTests(unittest.TestCase):
 
         windows = describe_rate_limit_windows(rate_limits, now=now)
 
-        self.assertEqual(1, len(windows))
-        self.assertEqual("weekly", windows[0]["key"])
+        self.assertEqual(2, len(windows))
+        self.assertEqual("5h", windows[0]["key"])
         self.assertTrue(windows[0]["reached"])
-        self.assertTrue(str(windows[0]["reset_text"]).startswith("today at "))
-        self.assertEqual("2h 0m", windows[0]["reset_in_text"])
+        self.assertEqual("weekly", windows[1]["key"])
+        self.assertFalse(windows[1]["reached"])
+        self.assertTrue(str(windows[1]["reset_text"]).startswith("today at "))
+        self.assertEqual("2h 0m", windows[1]["reset_in_text"])
+
+    def test_two_live_windows_are_displayed_without_fixed_assumptions(self) -> None:
+        rate_limits = {
+            "fetched_at": "2026-06-12T09:00:00Z",
+            "snapshots": [
+                {
+                    "limit_id": "codex",
+                    "primary": {"remaining_percent": 35.0, "window_minutes": 300},
+                    "secondary": {"remaining_percent": 82.0, "window_minutes": 7 * 24 * 60},
+                }
+            ],
+        }
+
+        self.assertTrue(
+            format_rate_limits_summary(rate_limits, compact=True).startswith("5h 35%; weekly 82%")
+        )
 
     def test_free_monthly_budget_is_not_labeled_weekly(self) -> None:
         now = dt.datetime(2026, 6, 12, 9, 0, tzinfo=dt.timezone.utc)

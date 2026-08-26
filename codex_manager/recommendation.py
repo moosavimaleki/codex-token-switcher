@@ -15,8 +15,8 @@ from .time_utils import human_delta, parse_datetime, utcnow
 WEEKLY_PERIOD = dt.timedelta(days=7)
 STALE_AFTER = dt.timedelta(minutes=15)
 VERY_STALE_AFTER = dt.timedelta(hours=1)
-WEEKLY_NEAR_RESET = dt.timedelta(hours=12)
-WEEKLY_SOFT_BUFFER = 5.0
+PACING_NEAR_RESET = dt.timedelta(hours=12)
+PACING_SOFT_BUFFER = 5.0
 
 
 @dataclass
@@ -30,6 +30,8 @@ class AccountRecommendation:
     weekly_remaining: float | None = None
     weekly_target: float | None = None
     weekly_health: float | None = None
+    quota_available: bool = False
+    pacing_label: str = "quota"
 
 
 @dataclass(frozen=True)
@@ -104,32 +106,39 @@ def _score_account(
     stale = stale_age is None or stale_age > STALE_AFTER
     very_stale = stale_age is None or stale_age > VERY_STALE_AFTER
 
-    weekly = _window(_weekly_window(snapshot), fetched_at, now, WEEKLY_PERIOD)
-    if weekly is None:
-        return AccountRecommendation(name, "CHECK", "missing weekly limit data", -inf)
+    plan_type = snapshot.get("plan_type") if isinstance(snapshot.get("plan_type"), str) else rate_limits.get("plan_type")
+    windows = _limit_windows(snapshot, fetched_at, now, plan_type=plan_type)
+    if not windows:
+        return AccountRecommendation(name, "CHECK", "missing limit data", -inf)
+    pacing = max(windows, key=lambda item: item[0].period)
+    pacing_label = pacing[1]
 
-    if bool(snapshot.get("limit_reached")) or weekly.remaining <= 0:
+    exhausted = next((label for window, label in windows if window.remaining <= 0.0), None)
+    if exhausted is not None:
         return AccountRecommendation(
             name,
             "SAVE",
-            "weekly limit reached",
+            f"{exhausted} limit reached",
             -inf,
-            weekly_remaining=weekly.remaining,
+            weekly_remaining=pacing[0].remaining,
+            quota_available=False,
+            pacing_label=pacing_label,
         )
 
-    weekly_remaining_time = _remaining_time(weekly, now)
-    weekly_target = _weekly_target(weekly_remaining_time, weekly.period, healthy_count, stale)
-    weekly_health = weekly.remaining - weekly_target
-    weekly_protected = weekly_health < -WEEKLY_SOFT_BUFFER and not (
-        weekly_remaining_time is not None and weekly_remaining_time <= WEEKLY_NEAR_RESET
+    pacing_window = pacing[0]
+    weekly_remaining_time = _remaining_time(pacing_window, now)
+    weekly_target = _weekly_target(weekly_remaining_time, pacing_window.period, healthy_count, stale)
+    weekly_health = pacing_window.remaining - weekly_target
+    weekly_protected = weekly_health < -PACING_SOFT_BUFFER and not (
+        weekly_remaining_time is not None and weekly_remaining_time <= PACING_NEAR_RESET
     )
 
     # A quota that resets sooner is cheaper to spend now. This keeps account
     # rotation aligned with the next reset date rather than remaining percent alone.
     reset_urgency = 0.0
     if weekly_remaining_time is not None:
-        reset_urgency = 100.0 * (1.0 - weekly_remaining_time / weekly.period)
-    score = weekly_health * 3.0 + weekly.remaining * 0.15 + reset_urgency * 0.35
+        reset_urgency = 100.0 * (1.0 - weekly_remaining_time / pacing_window.period)
+    score = weekly_health * 3.0 + pacing_window.remaining * 0.15 + reset_urgency * 0.35
     if weekly_protected:
         score -= 120.0
     if status_state == "warning":
@@ -146,13 +155,13 @@ def _score_account(
         label = "STALE" if label == "OK" else label
 
     reason_parts = [
-        f"weekly {weekly.remaining:.0f}% vs target {weekly_target:.0f}% ({weekly_health:+.0f})",
+        f"{pacing_label} {pacing_window.remaining:.0f}% vs target {weekly_target:.0f}% ({weekly_health:+.0f})",
     ]
     if weekly_remaining_time is not None:
-        reason_parts.append(f"weekly reset {human_delta(weekly_remaining_time)}")
+        reason_parts.append(f"{pacing_label} reset {human_delta(weekly_remaining_time)}")
         reason_parts.append(f"reset priority {reset_urgency:.0f}")
     if weekly_protected:
-        reason_parts.append("protect weekly pace")
+        reason_parts.append(f"protect {pacing_label} pace")
     elif stale:
         reason_parts.append("stale sample")
 
@@ -162,9 +171,11 @@ def _score_account(
         reason=", ".join(reason_parts),
         score=score,
         recommendable=not weekly_protected and not very_stale,
-        weekly_remaining=weekly.remaining,
+        weekly_remaining=pacing_window.remaining,
         weekly_target=weekly_target,
         weekly_health=weekly_health,
+        quota_available=True,
+        pacing_label=pacing_label,
     )
 
 
@@ -184,12 +195,30 @@ def _codex_snapshot(rate_limits: Any) -> dict[str, Any] | None:
     )
 
 
-def _weekly_window(snapshot: dict[str, Any]) -> Any:
-    secondary = snapshot.get("secondary")
-    if isinstance(secondary, dict):
-        return secondary
-    primary = snapshot.get("primary")
-    return primary if isinstance(primary, dict) else None
+def _limit_windows(
+    snapshot: dict[str, Any],
+    fetched_at: dt.datetime | None,
+    now: dt.datetime,
+    *,
+    plan_type: object,
+) -> list[tuple[_Window, str]]:
+    windows: list[tuple[_Window, str]] = []
+    for index, key in enumerate(("primary", "secondary"), start=1):
+        window = _window(snapshot.get(key), fetched_at, now, WEEKLY_PERIOD)
+        if window is not None:
+            windows.append((window, _window_label(window, index, plan_type=plan_type)))
+    return windows
+
+
+def _window_label(window: _Window, index: int, *, plan_type: object) -> str:
+    total_minutes = round(window.period.total_seconds() / 60)
+    if plan_type == "free" and total_minutes >= 27 * 24 * 60:
+        return "monthly"
+    if total_minutes >= 6 * 24 * 60:
+        return "weekly"
+    if total_minutes % 60 == 0:
+        return f"{total_minutes // 60}h"
+    return f"window {index}"
 
 
 def _window(

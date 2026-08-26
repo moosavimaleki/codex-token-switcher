@@ -26,6 +26,7 @@ from .config import cmd_config, cmd_config_interactive, print_config, prompt_con
 from .doctor import cmd_doctor, print_command_output
 from .maintenance import cmd_check, cmd_maintain, maintenance, run_account_checks
 from .sessions import cmd_sessions
+from .gateway import cmd_gateway
 from .scheduler import (
     CRON_MARKER,
     SESSIONS_CRON_MARKER,
@@ -58,6 +59,7 @@ __all__ = [
     "cmd_maintain",
     "cmd_scheduler_apply",
     "cmd_sessions",
+    "cmd_gateway",
     "delete_account",
     "install_crontab",
     "interactive_ls",

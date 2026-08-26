@@ -8,6 +8,7 @@ from .commands import (
     cmd_best,
     cmd_chart,
     cmd_check,
+    cmd_gateway,
     cmd_compact,
     cmd_config,
     cmd_doctor,
@@ -50,6 +51,11 @@ def build_parser() -> argparse.ArgumentParser:
     sessions.add_argument("--dry-run", action="store_true", help="report excess Codex sessions without revoking them")
     sessions.add_argument("--quiet", action="store_true")
     sessions.set_defaults(func=cmd_sessions)
+
+    gateway = sub.add_parser("gateway", help="run the OpenAI-compatible Codex gateway")
+    gateway.add_argument("--listen", help="listen address, for example 127.0.0.1:8787")
+    gateway.add_argument("--api-key", help="local bearer key")
+    gateway.set_defaults(func=cmd_gateway)
 
     chart = sub.add_parser("chart", help="open the Textual history chart")
     chart.add_argument("--account", help="account name")
@@ -98,6 +104,8 @@ def build_parser() -> argparse.ArgumentParser:
     config_set.add_argument("--chrome-root", help="Chrome profile directory, or 'none' for automatic detection")
     config_set.add_argument("--randomized-delay", help="systemd randomized delay, for example 0s or 10min")
     config_set.add_argument("--history-retention-days", type=int, help="how many days of limit history to keep")
+    config_set.add_argument("--gateway-listen", help="gateway address, for example 127.0.0.1:8787")
+    config_set.add_argument("--gateway-api-key", help="local gateway bearer key")
     config_set.add_argument("--apply-scheduler", action="store_true", help="rewrite and restart the installed timer")
     config_set.add_argument("--bin", help="codex-manager executable path for scheduler apply")
     config_set.set_defaults(func=cmd_config)

@@ -13,6 +13,8 @@ def print_config(paths: Paths, config: dict) -> None:
     printable = dict(config)
     if printable.get("proxy"):
         printable["proxy"] = redact_url(printable.get("proxy"))
+    if printable.get("gateway_api_key"):
+        printable["gateway_api_key"] = "*** configured ***"
     print(f"{style('Config file', 'bold'):<22} {paths.config_file}")
     print(json.dumps(printable, indent=2, ensure_ascii=False))
 
@@ -46,6 +48,8 @@ def cmd_config_interactive(paths: Paths) -> int:
     chrome_root = prompt_config_value("Chrome profile directory", str(config.get("chrome_root") or "auto"))
     randomized_delay = prompt_config_value("Randomized delay", str(config["randomized_delay"]))
     retention_days = prompt_config_value("History retention days", str(config["history_retention_days"]))
+    gateway_listen = prompt_config_value("Gateway listen address", str(config["gateway_listen"]))
+    gateway_api_key = prompt_config_value("Gateway API key", "configured")
 
     if proxy:
         updates["proxy"] = proxy
@@ -63,6 +67,10 @@ def cmd_config_interactive(paths: Paths) -> int:
         updates["randomized_delay"] = randomized_delay
     if retention_days:
         updates["history_retention_days"] = int(retention_days)
+    if gateway_listen:
+        updates["gateway_listen"] = gateway_listen
+    if gateway_api_key and gateway_api_key.lower() != "configured":
+        updates["gateway_api_key"] = gateway_api_key
 
     if updates:
         config = save_config(paths, updates)
@@ -110,6 +118,10 @@ def cmd_config(args) -> int:
         updates["randomized_delay"] = args.randomized_delay
     if args.history_retention_days is not None:
         updates["history_retention_days"] = args.history_retention_days
+    if args.gateway_listen is not None:
+        updates["gateway_listen"] = args.gateway_listen
+    if args.gateway_api_key is not None:
+        updates["gateway_api_key"] = args.gateway_api_key
     if not updates:
         raise ManagerError("provide a config value to update")
 
@@ -118,6 +130,6 @@ def cmd_config(args) -> int:
     if args.apply_scheduler:
         status = apply_scheduler(paths, args.bin)
         print(f"scheduler applied: {status}")
-    elif any(key in updates for key in ("maintain_interval", "monitor_interval", "session_monitor_interval", "session_monitor_enabled", "randomized_delay")):
+    elif any(key in updates for key in ("maintain_interval", "monitor_interval", "session_monitor_interval", "session_monitor_enabled", "randomized_delay", "gateway_listen", "gateway_api_key")):
         print(dim("Run `codex-manager scheduler apply` to update the installed timer."))
     return 0

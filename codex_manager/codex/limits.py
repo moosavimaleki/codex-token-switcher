@@ -89,10 +89,6 @@ def _snapshot(
         return None
     primary = _window(details.get("primary_window"))
     secondary = _window(details.get("secondary_window"))
-    # Codex now exposes its sole weekly budget as primary_window. Keep the
-    # persisted schema stable, but store windows by their actual duration.
-    if primary is not None and secondary is None:
-        secondary, primary = primary, None
     credit_snapshot = _credits(credits)
     if primary is None and secondary is None and credit_snapshot is None:
         return None
@@ -273,12 +269,14 @@ def format_rate_limit_resets(rate_limits: dict[str, Any] | None, now: dt.datetim
     current = now or utcnow()
     lines = []
     plan_type = codex.get("plan_type") if isinstance(codex.get("plan_type"), str) else rate_limits.get("plan_type")
-    for window, fallback in ((_budget_window(codex), "weekly"),):
+    for index, window in enumerate(_limit_windows(codex), start=1):
+        fallback = f"window {index}"
         label = _window_label(window, fallback, plan_type=plan_type)
         reset_at = _window_reset_at(window, fetched_at)
         if label and reset_at is not None:
+            display_label = label if any(char.isdigit() for char in label) else label.title()
             lines.append(
-                f"{label.title()} reset: {_reset_countdown_label(reset_at, current)} left | {_calendar_label(reset_at, current)}"
+                f"{display_label} reset: {_reset_countdown_label(reset_at, current)} left | {_calendar_label(reset_at, current)}"
             )
     return lines
 
@@ -305,14 +303,13 @@ def describe_rate_limit_windows(rate_limits: dict[str, Any] | None, now: dt.date
     current = now or utcnow()
     windows: list[dict[str, Any]] = []
     plan_type = codex.get("plan_type") if isinstance(codex.get("plan_type"), str) else rate_limits.get("plan_type")
-    for fallback, window in (("weekly", _budget_window(codex)),):
-        if not isinstance(window, dict):
-            continue
+    for index, window in enumerate(_limit_windows(codex), start=1):
+        fallback = f"window {index}"
         label = _window_label(window, fallback, plan_type=plan_type)
         remaining = window.get("remaining_percent")
         used = window.get("used_percent")
         reset_at = _window_reset_at(window, fetched_at)
-        reached = bool(codex.get("limit_reached")) or (isinstance(remaining, (int, float)) and float(remaining) <= 0.0)
+        reached = isinstance(remaining, (int, float)) and float(remaining) <= 0.0
         windows.append(
             {
                 "key": label or fallback,
@@ -347,11 +344,12 @@ def format_rate_limits_summary(rate_limits: dict[str, Any] | None, compact: bool
         text
         for text in (
             _window_text(
-                _budget_window(codex),
-                "weekly",
+                window,
+                f"window {index}",
                 plan_type=codex.get("plan_type") if isinstance(codex.get("plan_type"), str) else rate_limits.get("plan_type"),
                 compact=compact,
-            ),
+            )
+            for index, window in enumerate(_limit_windows(codex), start=1)
         )
         if text
     ]
@@ -367,9 +365,10 @@ def format_rate_limits_summary(rate_limits: dict[str, Any] | None, compact: bool
     return "; ".join(parts) + stale if parts else "limits unavailable"
 
 
-def _budget_window(snapshot: dict[str, Any]) -> dict[str, Any] | None:
-    secondary = snapshot.get("secondary")
-    if isinstance(secondary, dict):
-        return secondary
-    primary = snapshot.get("primary")
-    return primary if isinstance(primary, dict) else None
+def _limit_windows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return every window the backend supplied, preserving its order."""
+    return [
+        window
+        for key in ("primary", "secondary")
+        if isinstance(window := snapshot.get(key), dict)
+    ]

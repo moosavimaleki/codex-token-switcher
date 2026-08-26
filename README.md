@@ -126,6 +126,10 @@ routing settings live in
 `litellm/config.yaml`.
 The OpenRouter keys must be ordinary API keys, not management keys.
 
+Free OpenRouter models can still return upstream `429` responses because their provider pool is
+shared. The proxy disables internal retries so one client request does not become three upstream
+requests.
+
 Maintenance is scheduled every 6 hours using a user systemd timer when available, otherwise a
 crontab entry. A second 5-minute monitor timer runs `codex-manager check --quiet` so limit history
 stays fresh for charting. A third timer runs `codex-manager sessions --quiet` every 10 minutes by

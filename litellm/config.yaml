@@ -35,7 +35,8 @@ model_list:
 
 router_settings:
   routing_strategy: simple-shuffle
-  num_retries: 2
+  # Free OpenRouter providers use shared pools; retrying 429s multiplies pressure.
+  num_retries: 0
   allowed_fails: 1
   cooldown_time: 60
 

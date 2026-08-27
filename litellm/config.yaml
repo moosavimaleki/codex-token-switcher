@@ -1,162 +1,52 @@
 # LiteLLM proxy configuration for multiple OpenRouter accounts.
+# Named models and endpoint weights are canonical in PostgreSQL and managed via UI.
 # Keep credentials in litellm/.env (never commit that file).
 
 model_list:
-  # Primary OpenAI-compatible local-infra endpoint.
-  - model_name: "et-coder"
-    litellm_params:
-      model: "openai/et-coder"
-      api_base: https://dai.eitaa.ir/et-coder/v1
-      api_key: EMPTY
-      weight: 1
-
-  # Equal-weight agent pool. Unhealthy deployments are cooled down by the router.
-  - model_name: "agent"
-    litellm_params:
-      model: "openai/et-coder"
-      api_base: https://dai.eitaa.ir/et-coder/v1
-      api_key: EMPTY
-      weight: 1
-
-  - model_name: "agent"
-    litellm_params:
-      model: "openrouter/z-ai/glm-5.2:free"
-      api_key: os.environ/OPENROUTER_API_KEY_1
-      api_base: https://openrouter.ai/api/v1
-      weight: 1
-
-  - model_name: "agent"
-    litellm_params:
-      model: "openrouter/thinkingmachines/inkling:free"
-      api_key: os.environ/OPENROUTER_API_KEY_2
-      api_base: https://openrouter.ai/api/v1
-      weight: 1
-
-  - model_name: "agent"
-    litellm_params:
-      model: "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free"
-      api_key: os.environ/OPENROUTER_API_KEY_3
-      api_base: https://openrouter.ai/api/v1
-      weight: 1
-
-  - model_name: "agent"
-    litellm_params:
-      model: "openrouter/poolside/laguna-s-2.1:free"
-      api_key: os.environ/OPENROUTER_API_KEY_4
-      api_base: https://openrouter.ai/api/v1
-      weight: 1
-
-  - model_name: "agent"
-    litellm_params:
-      model: "openrouter/nvidia/nemotron-3-super-120b-a12b:free"
-      api_key: os.environ/OPENROUTER_API_KEY_5
-      api_base: https://openrouter.ai/api/v1
-      weight: 1
-
-  - model_name: "agent"
-    litellm_params:
-      model: "openrouter/google/gemma-4-31b-it:free"
-      api_key: os.environ/OPENROUTER_API_KEY_6
-      api_base: https://openrouter.ai/api/v1
-      weight: 1
-
-  - model_name: "agent"
-    litellm_params:
-      model: "openai/gemini-3.7-flash"
-      api_base: http://127.0.0.1:4010/v1
-      api_key: EMPTY
-      weight: 1
-
-  - model_name: "agent"
-    litellm_params:
-      model: "openai/gemini-3.5-flash"
-      api_base: http://127.0.0.1:4010/v1
-      api_key: EMPTY
-      weight: 1
-
-  - model_name: "agent"
-    litellm_params:
-      model: "openai/gemini-3.5-flash-lite"
-      api_base: http://127.0.0.1:4010/v1
-      api_key: EMPTY
-      weight: 1
-
-  - model_name: "agent"
-    litellm_params:
-      model: "openai/gemini-3.1-pro-preview"
-      api_base: http://127.0.0.1:4010/v1
-      api_key: EMPTY
-      weight: 1
-
-  # Direct names make each local Gemini model independently testable.
-  - model_name: "gemini-3.7-flash"
-    litellm_params:
-      model: "openai/gemini-3.7-flash"
-      api_base: http://127.0.0.1:4010/v1
-      api_key: EMPTY
-
-  - model_name: "gemini-3.5-flash"
-    litellm_params:
-      model: "openai/gemini-3.5-flash"
-      api_base: http://127.0.0.1:4010/v1
-      api_key: EMPTY
-
-  - model_name: "gemini-3.5-flash-lite"
-    litellm_params:
-      model: "openai/gemini-3.5-flash-lite"
-      api_base: http://127.0.0.1:4010/v1
-      api_key: EMPTY
-
-  - model_name: "gemini-3.1-pro-preview"
-    litellm_params:
-      model: "openai/gemini-3.1-pro-preview"
-      api_base: http://127.0.0.1:4010/v1
-      api_key: EMPTY
-
-  # Each deployment is one OpenRouter account. The wildcard preserves model IDs.
-  - model_name: "*"
+  # Config-only wildcard deployments preserve arbitrary OpenRouter model IDs.
+  - model_name: "openrouter/*"
     litellm_params:
       model: "openrouter/*"
       api_key: os.environ/OPENROUTER_API_KEY_1
       api_base: https://openrouter.ai/api/v1
 
-  - model_name: "*"
+  - model_name: "openrouter/*"
     litellm_params:
       model: "openrouter/*"
       api_key: os.environ/OPENROUTER_API_KEY_2
       api_base: https://openrouter.ai/api/v1
 
-  - model_name: "*"
+  - model_name: "openrouter/*"
     litellm_params:
       model: "openrouter/*"
       api_key: os.environ/OPENROUTER_API_KEY_3
       api_base: https://openrouter.ai/api/v1
 
-  - model_name: "*"
+  - model_name: "openrouter/*"
     litellm_params:
       model: "openrouter/*"
       api_key: os.environ/OPENROUTER_API_KEY_4
       api_base: https://openrouter.ai/api/v1
 
-  - model_name: "*"
+  - model_name: "openrouter/*"
     litellm_params:
       model: "openrouter/*"
       api_key: os.environ/OPENROUTER_API_KEY_5
       api_base: https://openrouter.ai/api/v1
 
-  - model_name: "*"
+  - model_name: "openrouter/*"
     litellm_params:
       model: "openrouter/*"
       api_key: os.environ/OPENROUTER_API_KEY_6
       api_base: https://openrouter.ai/api/v1
 
-  - model_name: "*"
+  - model_name: "openrouter/*"
     litellm_params:
       model: "openrouter/*"
       api_key: os.environ/OPENROUTER_API_KEY_7
       api_base: https://openrouter.ai/api/v1
 
-  - model_name: "*"
+  - model_name: "openrouter/*"
     litellm_params:
       model: "openrouter/*"
       api_key: os.environ/OPENROUTER_API_KEY_8
@@ -165,6 +55,8 @@ model_list:
 general_settings:
   database_url: os.environ/DATABASE_URL
   master_key: os.environ/LITELLM_MASTER_KEY
+  store_model_in_db: true
+  store_prompts_in_spend_logs: true
 
 router_settings:
   # Cool down a deployment after its first upstream rate-limit response.

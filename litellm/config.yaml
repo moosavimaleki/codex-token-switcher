@@ -92,4 +92,4 @@ general_settings:
 router_settings:
   # Cool down a deployment after its first upstream rate-limit response.
   allowed_fails: 1
-  cooldown_time: 21600  # 6 hours, in seconds
+  cooldown_time: 3600  # 1 hour, in seconds

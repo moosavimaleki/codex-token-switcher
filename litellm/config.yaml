@@ -21,35 +21,35 @@ model_list:
 
   - model_name: "agent"
     litellm_params:
-      model: "openrouter/z-ai/glm-5.2"
+      model: "openrouter/z-ai/glm-5.2:free"
       api_key: os.environ/OPENROUTER_API_KEY_1
       api_base: https://openrouter.ai/api/v1
       weight: 1
 
   - model_name: "agent"
     litellm_params:
-      model: "openrouter/thinkingmachines/inkling"
+      model: "openrouter/thinkingmachines/inkling:free"
       api_key: os.environ/OPENROUTER_API_KEY_2
       api_base: https://openrouter.ai/api/v1
       weight: 1
 
   - model_name: "agent"
     litellm_params:
-      model: "openrouter/nvidia/nemotron-3-ultra-550b-a55b"
+      model: "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free"
       api_key: os.environ/OPENROUTER_API_KEY_3
       api_base: https://openrouter.ai/api/v1
       weight: 1
 
   - model_name: "agent"
     litellm_params:
-      model: "openrouter/poolside/laguna-s-2.1"
+      model: "openrouter/poolside/laguna-s-2.1:free"
       api_key: os.environ/OPENROUTER_API_KEY_4
       api_base: https://openrouter.ai/api/v1
       weight: 1
 
   - model_name: "agent"
     litellm_params:
-      model: "openrouter/nvidia/nemotron-3-super-120b-a12b"
+      model: "openrouter/nvidia/nemotron-3-super-120b-a12b:free"
       api_key: os.environ/OPENROUTER_API_KEY_5
       api_base: https://openrouter.ai/api/v1
       weight: 1

@@ -50,6 +50,9 @@ def _vertex_request(body: dict[str, Any]) -> dict[str, Any]:
     for source, target in (("temperature", "temperature"), ("top_p", "topP"), ("top_k", "topK")):
         if source in body:
             generation[target] = body[source]
+    # The browser-backed Vertex lab requires an explicit thinking mode.
+    # LOW is accepted by every currently exposed Gemini model.
+    generation["thinkingConfig"] = {"levelEnum": "LOW"}
 
     request: dict[str, Any] = {"contents": contents, "generationConfig": generation}
     if system_parts:

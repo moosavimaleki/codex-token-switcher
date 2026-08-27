@@ -2,6 +2,14 @@
 # Keep credentials in litellm/.env (never commit that file).
 
 model_list:
+  # Primary OpenAI-compatible local-infra endpoint.
+  - model_name: "et-coder"
+    litellm_params:
+      model: "openai/et-coder"
+      api_base: https://dai.eitaa.ir/et-coder/v1
+      api_key: EMPTY
+      weight: 10
+
   # Each deployment is one OpenRouter account. The wildcard preserves model IDs.
   - model_name: "*"
     litellm_params:

@@ -61,6 +61,13 @@ model_list:
       api_base: https://openrouter.ai/api/v1
       weight: 1
 
+  - model_name: "agent"
+    litellm_params:
+      model: "openai/gemini-3.7-flash"
+      api_base: http://127.0.0.1:4010/v1
+      api_key: EMPTY
+      weight: 1
+
   # Each deployment is one OpenRouter account. The wildcard preserves model IDs.
   - model_name: "*"
     litellm_params:

@@ -19,6 +19,7 @@ fi
 "$LITELLM_VENV/bin/python" -m pip install --upgrade 'litellm[proxy]'
 install -m 0600 "$PROJECT_DIR/litellm/.env.example" "$LITELLM_HOME/.env.example"
 install -m 0644 "$PROJECT_DIR/litellm/config.yaml" "$LITELLM_HOME/config.yaml"
+install -m 0644 "$PROJECT_DIR/litellm/gemini_vertex_adapter.py" "$LITELLM_HOME/gemini_vertex_adapter.py"
 
 if [[ ! -e "$LITELLM_HOME/.env" ]]; then
   install -m 0600 "$PROJECT_DIR/litellm/.env.example" "$LITELLM_HOME/.env"
@@ -44,8 +45,26 @@ RestartSec=5
 WantedBy=default.target
 EOF
 
+cat > "$SYSTEMD_DIR/codex-manager-gemini-adapter.service" <<EOF
+[Unit]
+Description=OpenAI adapter for the local Gemini Vertex lab
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=$LITELLM_HOME
+EnvironmentFile=$LITELLM_HOME/.env
+ExecStart=$LITELLM_VENV/bin/uvicorn gemini_vertex_adapter:app --host 127.0.0.1 --port 4010
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+EOF
+
 if command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; then
   systemctl --user daemon-reload
+  systemctl --user enable --now codex-manager-gemini-adapter.service
   systemctl --user enable --now codex-manager-litellm.service
   echo "LiteLLM is running at http://127.0.0.1:4000"
 else

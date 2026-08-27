@@ -88,3 +88,8 @@ model_list:
 general_settings:
   database_url: os.environ/DATABASE_URL
   master_key: os.environ/LITELLM_MASTER_KEY
+
+router_settings:
+  # Cool down a deployment after its first upstream rate-limit response.
+  allowed_fails: 1
+  cooldown_time: 21600  # 6 hours, in seconds

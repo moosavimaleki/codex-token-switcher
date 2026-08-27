@@ -119,12 +119,15 @@ systemctl --user restart codex-manager-litellm.service
 curl http://127.0.0.1:4000/health/liveliness
 ```
 
-The local proxy is bound to `127.0.0.1` and does not require a client token. Any OpenRouter model
-can be requested by its normal OpenRouter ID, for example
+The local proxy is bound to `127.0.0.1`. It requires the configured LiteLLM master key as a Bearer
+token. Any OpenRouter model can be requested by its normal OpenRouter ID, for example
 `nvidia/nemotron-3.5-lightning:free` (the optional `openrouter/` prefix also works). The model and
 routing settings live in
 `litellm/config.yaml`.
 The OpenRouter keys must be ordinary API keys, not management keys.
+
+The Admin UI uses the PostgreSQL service from the local infrastructure compose stack. Its default
+connection is `postgresql://postgres:postgres@127.0.0.1:5433/postgres`.
 
 Free OpenRouter models can still return upstream `429` responses because their provider pool is
 shared; this limit is imposed by the upstream provider, not by the local proxy.

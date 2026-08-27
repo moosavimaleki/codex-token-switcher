@@ -30,8 +30,9 @@ SYSTEMD_DIR="$HOME/.config/systemd/user"
 mkdir -p "$SYSTEMD_DIR"
 cat > "$SYSTEMD_DIR/codex-manager-litellm.service" <<EOF
 [Unit]
-Description=LiteLLM OpenRouter proxy for codex-manager
-After=network-online.target
+Description=LiteLLM model gateway for codex-manager
+Wants=codex-manager-gemini-adapter.service
+After=network-online.target codex-manager-gemini-adapter.service
 
 [Service]
 Type=simple

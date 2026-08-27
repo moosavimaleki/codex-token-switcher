@@ -8,16 +8,15 @@ model_list:
       model: "openai/et-coder"
       api_base: https://dai.eitaa.ir/et-coder/v1
       api_key: EMPTY
-      weight: 10
+      weight: 1
 
-  # Weighted agent endpoint. Call model="agent" to prefer et-coder while
-  # retaining strong OpenRouter models as alternatives.
+  # Equal-weight agent pool. Unhealthy deployments are cooled down by the router.
   - model_name: "agent"
     litellm_params:
       model: "openai/et-coder"
       api_base: https://dai.eitaa.ir/et-coder/v1
       api_key: EMPTY
-      weight: 10
+      weight: 1
 
   - model_name: "agent"
     litellm_params:

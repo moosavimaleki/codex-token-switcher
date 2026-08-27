@@ -85,6 +85,24 @@ model_list:
       api_key: os.environ/OPENROUTER_API_KEY_5
       api_base: https://openrouter.ai/api/v1
 
+  - model_name: "*"
+    litellm_params:
+      model: "openrouter/*"
+      api_key: os.environ/OPENROUTER_API_KEY_6
+      api_base: https://openrouter.ai/api/v1
+
+  - model_name: "*"
+    litellm_params:
+      model: "openrouter/*"
+      api_key: os.environ/OPENROUTER_API_KEY_7
+      api_base: https://openrouter.ai/api/v1
+
+  - model_name: "*"
+    litellm_params:
+      model: "openrouter/*"
+      api_key: os.environ/OPENROUTER_API_KEY_8
+      api_base: https://openrouter.ai/api/v1
+
 general_settings:
   database_url: os.environ/DATABASE_URL
   master_key: os.environ/LITELLM_MASTER_KEY

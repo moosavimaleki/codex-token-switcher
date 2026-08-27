@@ -2,7 +2,7 @@
 # Keep credentials in litellm/.env (never commit that file).
 
 model_list:
-  # All deployments use Ox Alpha; each key is a separate OpenRouter account.
+  # Each deployment is one OpenRouter account. The wildcard preserves model IDs.
   - model_name: "*"
     litellm_params:
       model: "openrouter/*"
@@ -32,13 +32,3 @@ model_list:
       model: "openrouter/*"
       api_key: os.environ/OPENROUTER_API_KEY_5
       api_base: https://openrouter.ai/api/v1
-
-router_settings:
-  routing_strategy: simple-shuffle
-  # Free OpenRouter providers use shared pools; retrying 429s multiplies pressure.
-  num_retries: 0
-  allowed_fails: 1
-  cooldown_time: 60
-
-litellm_settings:
-  drop_params: true

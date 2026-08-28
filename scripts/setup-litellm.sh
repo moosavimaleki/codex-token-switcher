@@ -20,6 +20,7 @@ fi
 install -m 0600 "$PROJECT_DIR/litellm/.env.example" "$LITELLM_HOME/.env.example"
 install -m 0644 "$PROJECT_DIR/litellm/config.yaml" "$LITELLM_HOME/config.yaml"
 install -m 0644 "$PROJECT_DIR/litellm/gemini_vertex_adapter.py" "$LITELLM_HOME/gemini_vertex_adapter.py"
+install -m 0644 "$PROJECT_DIR/litellm/openai_passthrough_adapter.py" "$LITELLM_HOME/openai_passthrough_adapter.py"
 
 if [[ ! -e "$LITELLM_HOME/.env" ]]; then
   install -m 0600 "$PROJECT_DIR/litellm/.env.example" "$LITELLM_HOME/.env"
@@ -31,8 +32,8 @@ mkdir -p "$SYSTEMD_DIR"
 cat > "$SYSTEMD_DIR/codex-manager-litellm.service" <<EOF
 [Unit]
 Description=LiteLLM model gateway for codex-manager
-Wants=codex-manager-gemini-adapter.service
-After=network-online.target codex-manager-gemini-adapter.service
+Wants=codex-manager-gemini-adapter.service codex-manager-chatgpt-adapter.service
+After=network-online.target codex-manager-gemini-adapter.service codex-manager-chatgpt-adapter.service
 
 [Service]
 Type=simple
@@ -63,9 +64,27 @@ RestartSec=5
 WantedBy=default.target
 EOF
 
+cat > "$SYSTEMD_DIR/codex-manager-chatgpt-adapter.service" <<EOF
+[Unit]
+Description=Header-clean OpenAI passthrough for the local ChatGPT lab
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=$LITELLM_HOME
+EnvironmentFile=$LITELLM_HOME/.env
+ExecStart=$LITELLM_VENV/bin/uvicorn openai_passthrough_adapter:app --host 127.0.0.1 --port 4011
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+EOF
+
 if command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; then
   systemctl --user daemon-reload
   systemctl --user enable --now codex-manager-gemini-adapter.service
+  systemctl --user enable --now codex-manager-chatgpt-adapter.service
   systemctl --user enable --now codex-manager-litellm.service
   echo "LiteLLM is running at http://127.0.0.1:4000"
 else
